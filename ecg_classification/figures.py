@@ -22,12 +22,24 @@ from ecg_classification.utils import ensure_directory
 
 
 def _load_run_metrics(run_dir: Path) -> dict[str, object]:
-    with open(run_dir / "metrics.json", "r", encoding="utf-8") as file:
+    metrics_path = run_dir / "metrics.json"
+    if not metrics_path.exists():
+        raise FileNotFoundError(
+            f"Run directory is missing metrics.json: {metrics_path}. "
+            "Run training first, or pass --run-dir to a completed run output directory."
+        )
+    with open(metrics_path, "r", encoding="utf-8") as file:
         return json.load(file)
 
 
 def _load_run_config(run_dir: Path) -> dict[str, object]:
-    with open(run_dir / "config.json", "r", encoding="utf-8") as file:
+    config_path = run_dir / "config.json"
+    if not config_path.exists():
+        raise FileNotFoundError(
+            f"Run directory is missing config.json: {config_path}. "
+            "Run training first, or pass --run-dir to a completed run output directory."
+        )
+    with open(config_path, "r", encoding="utf-8") as file:
         return json.load(file)
 
 
@@ -298,7 +310,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate EDA, method, and result figures for the ECG project.")
     parser.add_argument("--train-csv", type=Path, default=PROJECT_ROOT / "data" / "mitbih" / "mitbih_train.csv")
     parser.add_argument("--test-csv", type=Path, default=PROJECT_ROOT / "data" / "mitbih" / "mitbih_test.csv")
-    parser.add_argument("--run-dir", type=Path, default=PROJECT_ROOT / "outputs" / "report_run")
+    parser.add_argument("--run-dir", type=Path, default=PROJECT_ROOT / "outputs" / "baseline_run")
     parser.add_argument("--output-dir", type=Path, default=PROJECT_ROOT / "docs" / "assets")
     parser.add_argument(
         "--augment-labels",

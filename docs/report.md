@@ -108,6 +108,8 @@ Three 50-epoch runs were executed on Apple Silicon using PyTorch `MPS`:
 - `outputs/baseline_run_no_aug`
 - `outputs/baseline_run_static_aug`
 
+These run directories are local experiment artifacts used for analysis and are typically not tracked in the public repository because `outputs/*` is ignored.
+
 Shared hyperparameters were:
 
 - batch size: `256`
