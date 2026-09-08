@@ -55,7 +55,7 @@
   "post_seconds": 0.5,
   "normalisation": "per-beat median subtraction, per-record IQR scale",
   "channel": "MLII",
-  "class_names": [
+  "class_symbols": [
     "N",
     "S",
     "V",
