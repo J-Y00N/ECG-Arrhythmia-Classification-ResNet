@@ -10,7 +10,7 @@ from torch.utils.data import Dataset, WeightedRandomSampler, get_worker_info
 
 from ecg_classification import mitdb
 from ecg_classification.augment import BeatAugmenter
-from ecg_classification.constants import NUM_CLASSES, OBSERVATION_LABEL, OBSERVATION_SYMBOL, SAMPLE_LENGTH
+from ecg_classification.constants import NUM_CLASSES, OBSERVATION_LABEL, SAMPLE_LENGTH
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATA_DIR = PROJECT_ROOT / "data"
