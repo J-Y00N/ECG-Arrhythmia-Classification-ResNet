@@ -3,22 +3,84 @@
 Everything that defines *which* records are used, *how* annotation symbols map
 to AAMI classes, and *what shape* a beat has lives here. Nothing in this module
 imports anything else from the project, so it can be read on its own as the
-specification for the rebuilt pipeline.
+specification for the pipeline.
 
 Design notes
 ------------
-The purpose of this rebuild is to change the *source* of the data from a
+The purpose of the rebuild is to change the *source* of the data from a
 preprocessed CSV release to the raw PhysioNet records, not to reproduce that
-release. The CSV's generation procedure is not documented, so reproducing it
-is not possible and imitating it would mean inheriting undocumented choices.
+release. The CSV's generation procedure is not documented, so reproducing it is
+not possible and imitating it would mean inheriting undocumented choices.
 
 Only the beat length of 187 samples is carried over, because the existing
 network's input layer fixes it. Everything else -- sampling rate, window
 placement, normalisation -- is specified here on physiological grounds and can
 be defended without reference to the earlier artefact.
+
+Naming
+------
+``CLASS_SYMBOLS`` holds the compact AAMI codes ("N", "S", "V", "F", "Q") and is
+what the pipeline uses for column headers, file names and lookups.
+``CLASS_NAMES`` holds the long human-readable descriptions and is what figures
+and classification reports display. They are different things; do not conflate
+them.
 """
 
 from __future__ import annotations
+
+# ---------------------------------------------------------------------------
+# Class labels
+# ---------------------------------------------------------------------------
+
+LABEL_TO_SYMBOL = {
+    0: "N",
+    1: "S",
+    2: "V",
+    3: "F",
+    4: "Q",
+}
+
+LABEL_TO_NAME = {
+    0: "Normal beat",
+    1: "Supraventricular ectopic beat",
+    2: "Ventricular ectopic beat",
+    3: "Fusion beat",
+    4: "Unknown / unclassifiable beat",
+}
+
+#: Compact AAMI codes, in fixed index order. The model emits logits in this
+#: order, so never reorder without retraining.
+CLASS_SYMBOLS = [LABEL_TO_SYMBOL[index] for index in sorted(LABEL_TO_SYMBOL)]
+
+#: Long descriptions, used for figure labels and classification reports.
+CLASS_NAMES = [LABEL_TO_NAME[index] for index in sorted(LABEL_TO_NAME)]
+
+NUM_CLASSES = len(CLASS_NAMES)
+
+#: Samples per beat. Fixed by the existing network's input layer.
+SAMPLE_LENGTH = 187
+
+#: Alias used by the raw-data pipeline. Same value, clearer name in context.
+BEAT_LENGTH = SAMPLE_LENGTH
+
+#: Symbol -> class index. Inverse of ``LABEL_TO_SYMBOL``.
+SYMBOL_TO_INDEX: dict[str, int] = {
+    symbol: index for index, symbol in LABEL_TO_SYMBOL.items()
+}
+
+#: Excluding the paced records removes essentially all "/" and "f" beats, so
+#: after AAMI filtering the Q class holds only a few dozen genuinely
+#: unclassifiable beats across the whole database (15 in this build). Q is kept
+#: as an output class so the network architecture is unchanged, but it is
+#: effectively degenerate and per-class metrics for Q are not interpretable.
+#:
+#: This is also a further reason the previous CSV-based results are not
+#: comparable: that release kept the paced records, so its Q class held roughly
+#: eight thousand paced beats rather than a few dozen artefacts. Roughly 7% of
+#: the old dataset was an easy, visually distinctive class that no longer
+#: exists here.
+DEGENERATE_SYMBOLS: tuple[str, ...] = ("Q",)
+
 
 # ---------------------------------------------------------------------------
 # Source database
@@ -37,7 +99,7 @@ SOURCE_FS = 360
 #: Records excluded under the AAMI EC57 recommendation because they contain
 #: paced beats. Records 102 and 104 additionally have no MLII channel at all
 #: (surgical dressings forced the use of V5), so they could not be loaded by
-#: the MLII selector in ``data.py`` even if they were kept.
+#: the MLII selector in ``mitdb.py`` even if they were kept.
 PACED_RECORDS: tuple[str, ...] = ("102", "104", "107", "217")
 
 #: de Chazal et al. (2004) inter-patient partition, training half.
@@ -68,24 +130,17 @@ SAME_SUBJECT_PAIRS: tuple[tuple[str, str], ...] = (("201", "202"),)
 STRICT_DISJOINT_EXCLUDE: tuple[str, ...] = ("202",)
 
 #: Record 114 has its two signals reversed relative to every other record, so
-#: MLII is the *second* channel rather than the first. ``data.py`` selects the
+#: MLII is the *second* channel rather than the first. ``mitdb.py`` selects the
 #: channel by name rather than by index, which handles this automatically; the
 #: constant is kept for documentation and for assertions in tests.
 REVERSED_CHANNEL_RECORDS: tuple[str, ...] = ("114",)
 
 
 # ---------------------------------------------------------------------------
-# AAMI class mapping
+# AAMI symbol mapping
 # ---------------------------------------------------------------------------
 
-#: AAMI EC57 class labels, in a fixed index order. The model emits logits in
-#: this order, so never reorder this tuple without retraining.
-CLASS_NAMES: tuple[str, ...] = ("N", "S", "V", "F", "Q")
-
-CLASS_TO_INDEX: dict[str, int] = {name: i for i, name in enumerate(CLASS_NAMES)}
-INDEX_TO_CLASS: dict[int, str] = {i: name for name, i in CLASS_TO_INDEX.items()}
-
-#: MIT-BIH beat annotation symbol -> AAMI class.
+#: MIT-BIH beat annotation symbol -> AAMI class symbol.
 #:
 #: Any symbol absent from this mapping is a non-beat annotation (rhythm change,
 #: signal quality, artefact, and so on) and is dropped during segmentation.
@@ -112,33 +167,18 @@ AAMI_SYMBOL_MAP: dict[str, str] = {
     "Q": "Q",
 }
 
-#: IMPORTANT. Excluding the paced records removes essentially all "/" and "f"
-#: beats, so after AAMI filtering the Q class is left with only a few dozen
-#: genuinely unclassifiable beats across the whole database. Q is retained as
-#: an output class so the network architecture is unchanged, but it is
-#: effectively degenerate and per-class metrics for Q are not interpretable.
-#:
-#: This is also a further reason the previous CSV-based results are not
-#: comparable: that release kept the paced records, so its Q class held roughly
-#: eight thousand paced beats rather than a few dozen artefacts.
-DEGENERATE_CLASSES: tuple[str, ...] = ("Q",)
-
 
 # ---------------------------------------------------------------------------
 # Target signal specification
 # ---------------------------------------------------------------------------
 #
-# Only one property is inherited from the previous pipeline: a beat is 187
-# samples long, so the network, the augmentation code and the training loop
-# need no changes. Every other choice below is made here and is justified on
-# physiological grounds rather than copied from an undocumented artefact.
+# Only the beat length is inherited from the previous pipeline. Every other
+# choice below is made here and justified on physiological grounds rather than
+# copied from an undocumented artefact.
 
 #: Resampling target, in Hz. Chosen so that BEAT_LENGTH samples span roughly
 #: one cardiac cycle: 187 / 250 = 0.748 s.
 TARGET_FS = 250
-
-#: Samples per beat. Fixed by the existing network's input layer.
-BEAT_LENGTH = 187
 
 #: Samples taken before the R peak. 62 / 250 = 0.248 s, which comfortably
 #: contains the P wave (normally under 0.12 s) and the PR interval (0.12-0.20 s
@@ -186,11 +226,11 @@ PREDICTION_COLUMNS: tuple[str, ...] = (
     "beat_index",
     "y_true",
     "y_pred",
-    *(f"p_{c}" for c in CLASS_NAMES),
+    *(f"p_{symbol}" for symbol in CLASS_SYMBOLS),
 )
 
 #: Class-by-record contingency table written at cache-build time. Feeds the
-#: effective-patient-count analysis in P3.
+#: effective-patient-count analysis.
 CLASS_RECORD_TABLE_NAME = "class_record_counts.csv"
 
 
@@ -204,10 +244,12 @@ def _validate() -> None:
     assert not set(DS1) & set(DS2), "DS1 and DS2 overlap"
     assert len(AAMI_RECORDS) == 44, f"expected 44 AAMI records, found {len(AAMI_RECORDS)}"
     assert not set(AAMI_RECORDS) & set(PACED_RECORDS), "a paced record leaked into the AAMI set"
-    assert set(AAMI_SYMBOL_MAP.values()) <= set(CLASS_NAMES), "symbol map emits an unknown class"
-    assert len(CLASS_NAMES) == len(set(CLASS_NAMES)), "duplicate class name"
-    assert PRE_SAMPLES + POST_SAMPLES == BEAT_LENGTH, (
-        f"window halves sum to {PRE_SAMPLES + POST_SAMPLES}, expected {BEAT_LENGTH}"
+    assert len(CLASS_SYMBOLS) == len(CLASS_NAMES) == NUM_CLASSES, "class label tables disagree"
+    assert len(set(CLASS_SYMBOLS)) == NUM_CLASSES, "duplicate class symbol"
+    assert set(AAMI_SYMBOL_MAP.values()) <= set(CLASS_SYMBOLS), "symbol map emits an unknown class"
+    assert set(SYMBOL_TO_INDEX) == set(CLASS_SYMBOLS), "symbol index table disagrees"
+    assert PRE_SAMPLES + POST_SAMPLES == BEAT_LENGTH == SAMPLE_LENGTH, (
+        f"window halves sum to {PRE_SAMPLES + POST_SAMPLES}, expected {SAMPLE_LENGTH}"
     )
 
 
