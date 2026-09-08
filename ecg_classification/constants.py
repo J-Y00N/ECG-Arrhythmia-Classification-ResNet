@@ -31,8 +31,27 @@ from __future__ import annotations
 # ---------------------------------------------------------------------------
 # Class labels
 # ---------------------------------------------------------------------------
+#
+# Two levels of label live here and must not be conflated.
+#
+# The *database* level is the full AAMI five-class grouping. Segmentation needs
+# it, because every annotated beat has to be assigned somewhere before any
+# modelling decision is taken, and the class-by-record table describes what the
+# database contains rather than what we chose to learn.
+#
+# The *model* level is four classes. Once the paced recordings are excluded per
+# AAMI EC57, the Q class holds 15 unclassifiable beats database-wide -- all of
+# them baseline wander or electrode transients. de Chazal et al. (2004) dropped
+# Q for this reason and the inter-patient literature has followed since, so a
+# four-class head is both the honest choice and the one that keeps results
+# comparable with published work.
+#
+# Indices 0-3 mean the same thing at both levels, so a cache built with the
+# five-class mapping stays valid without rebuilding.
 
-LABEL_TO_SYMBOL = {
+#: Full AAMI grouping. Database level: used for segmentation and for the
+#: class-by-record contingency table.
+AAMI_LABEL_TO_SYMBOL = {
     0: "N",
     1: "S",
     2: "V",
@@ -40,46 +59,55 @@ LABEL_TO_SYMBOL = {
     4: "Q",
 }
 
+AAMI_SYMBOLS = [AAMI_LABEL_TO_SYMBOL[index] for index in sorted(AAMI_LABEL_TO_SYMBOL)]
+
+AAMI_SYMBOL_TO_INDEX: dict[str, int] = {
+    symbol: index for index, symbol in AAMI_LABEL_TO_SYMBOL.items()
+}
+
+#: Label the model does not learn. Beats carrying it are held out of every
+#: split and kept only as an observation set: they let us ask how a classifier
+#: that has never seen pure artefact behaves when it meets some. A confident
+#: "normal beat" on a detached-electrode waveform is a clinically dangerous
+#: failure mode, and 15 beats is enough to look at even though it is nowhere
+#: near enough to score.
+OBSERVATION_LABEL = 4
+OBSERVATION_SYMBOL = AAMI_LABEL_TO_SYMBOL[OBSERVATION_LABEL]
+
+#: Model level. Compact codes, in fixed index order. The network emits logits in
+#: this order, so never reorder without retraining.
+CLASS_SYMBOLS = [
+    symbol for index, symbol in sorted(AAMI_LABEL_TO_SYMBOL.items())
+    if index != OBSERVATION_LABEL
+]
+
 LABEL_TO_NAME = {
     0: "Normal beat",
     1: "Supraventricular ectopic beat",
     2: "Ventricular ectopic beat",
     3: "Fusion beat",
-    4: "Unknown / unclassifiable beat",
 }
-
-#: Compact AAMI codes, in fixed index order. The model emits logits in this
-#: order, so never reorder without retraining.
-CLASS_SYMBOLS = [LABEL_TO_SYMBOL[index] for index in sorted(LABEL_TO_SYMBOL)]
 
 #: Long descriptions, used for figure labels and classification reports.
 CLASS_NAMES = [LABEL_TO_NAME[index] for index in sorted(LABEL_TO_NAME)]
 
 NUM_CLASSES = len(CLASS_NAMES)
 
+#: Kept for backwards compatibility with code that indexed symbols by label.
+LABEL_TO_SYMBOL = {
+    index: symbol for index, symbol in AAMI_LABEL_TO_SYMBOL.items()
+    if index != OBSERVATION_LABEL
+}
+
+SYMBOL_TO_INDEX: dict[str, int] = {
+    symbol: index for index, symbol in LABEL_TO_SYMBOL.items()
+}
+
 #: Samples per beat. Fixed by the existing network's input layer.
 SAMPLE_LENGTH = 187
 
 #: Alias used by the raw-data pipeline. Same value, clearer name in context.
 BEAT_LENGTH = SAMPLE_LENGTH
-
-#: Symbol -> class index. Inverse of ``LABEL_TO_SYMBOL``.
-SYMBOL_TO_INDEX: dict[str, int] = {
-    symbol: index for index, symbol in LABEL_TO_SYMBOL.items()
-}
-
-#: Excluding the paced records removes essentially all "/" and "f" beats, so
-#: after AAMI filtering the Q class holds only a few dozen genuinely
-#: unclassifiable beats across the whole database (15 in this build). Q is kept
-#: as an output class so the network architecture is unchanged, but it is
-#: effectively degenerate and per-class metrics for Q are not interpretable.
-#:
-#: This is also a further reason the previous CSV-based results are not
-#: comparable: that release kept the paced records, so its Q class held roughly
-#: eight thousand paced beats rather than a few dozen artefacts. Roughly 7% of
-#: the old dataset was an easy, visually distinctive class that no longer
-#: exists here.
-DEGENERATE_SYMBOLS: tuple[str, ...] = ("Q",)
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +172,14 @@ REVERSED_CHANNEL_RECORDS: tuple[str, ...] = ("114",)
 #:
 #: Any symbol absent from this mapping is a non-beat annotation (rhythm change,
 #: signal quality, artefact, and so on) and is dropped during segmentation.
+#:
+#: "/" and "f" survive here for completeness, but they occur only in the paced
+#: recordings, which AAMI excludes. What remains under Q after that exclusion is
+#: the literal "Q" annotation: 15 beats the original annotators could not
+#: classify. This is also why the previous CSV-based results are not comparable
+#: with these -- that release kept the paced recordings, so its Q class was
+#: roughly eight thousand paced beats, a visually distinctive and easily learned
+#: category making up about 7% of the data, rather than a handful of artefacts.
 AAMI_SYMBOL_MAP: dict[str, str] = {
     # N: normal, bundle-branch block, nodal escape, atrial escape
     "N": "N",
@@ -244,10 +280,14 @@ def _validate() -> None:
     assert not set(DS1) & set(DS2), "DS1 and DS2 overlap"
     assert len(AAMI_RECORDS) == 44, f"expected 44 AAMI records, found {len(AAMI_RECORDS)}"
     assert not set(AAMI_RECORDS) & set(PACED_RECORDS), "a paced record leaked into the AAMI set"
-    assert len(CLASS_SYMBOLS) == len(CLASS_NAMES) == NUM_CLASSES, "class label tables disagree"
-    assert len(set(CLASS_SYMBOLS)) == NUM_CLASSES, "duplicate class symbol"
-    assert set(AAMI_SYMBOL_MAP.values()) <= set(CLASS_SYMBOLS), "symbol map emits an unknown class"
+    assert len(CLASS_SYMBOLS) == len(CLASS_NAMES) == NUM_CLASSES == 4, "class label tables disagree"
+    assert len(set(AAMI_SYMBOLS)) == 5, "the AAMI grouping should hold five classes"
+    assert set(AAMI_SYMBOL_MAP.values()) <= set(AAMI_SYMBOLS), "symbol map emits an unknown class"
     assert set(SYMBOL_TO_INDEX) == set(CLASS_SYMBOLS), "symbol index table disagrees"
+    assert OBSERVATION_SYMBOL not in CLASS_SYMBOLS, "the observation class must not be a model class"
+    assert AAMI_SYMBOLS[:NUM_CLASSES] == CLASS_SYMBOLS, (
+        "model indices must match AAMI indices 0..3 so an existing cache stays valid"
+    )
     assert PRE_SAMPLES + POST_SAMPLES == BEAT_LENGTH == SAMPLE_LENGTH, (
         f"window halves sum to {PRE_SAMPLES + POST_SAMPLES}, expected {SAMPLE_LENGTH}"
     )

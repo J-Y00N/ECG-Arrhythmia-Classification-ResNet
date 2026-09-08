@@ -54,9 +54,9 @@ from .constants import (
     AAMI_RECORDS,
     AAMI_SYMBOL_MAP,
     BEAT_LENGTH,
-    CLASS_SYMBOLS,
+    AAMI_SYMBOLS,
     CLASS_RECORD_TABLE_NAME,
-    SYMBOL_TO_INDEX,
+    AAMI_SYMBOL_TO_INDEX,
     DS1,
     DS2,
     INTRA_TEST_FRACTION,
@@ -144,7 +144,7 @@ def load_record(record_id: str, db_dir: Path) -> RawRecord:
 
     annotation = wfdb.rdann(stem, "atr")
     keep = [
-        (int(sample), SYMBOL_TO_INDEX[AAMI_SYMBOL_MAP[symbol]])
+        (int(sample), AAMI_SYMBOL_TO_INDEX[AAMI_SYMBOL_MAP[symbol]])
         for sample, symbol in zip(annotation.sample, annotation.symbol)
         if symbol in AAMI_SYMBOL_MAP
     ]
@@ -304,9 +304,9 @@ def build_cache(
         all_positions.append(positions)
         all_records.append(np.full(len(beats), record_id, dtype="<U3"))
 
-        per_class = {symbol: 0 for symbol in CLASS_SYMBOLS}
+        per_class = {symbol: 0 for symbol in AAMI_SYMBOLS}
         for index, count in zip(*np.unique(beat_labels, return_counts=True)):
-            per_class[CLASS_SYMBOLS[int(index)]] = int(count)
+            per_class[AAMI_SYMBOLS[int(index)]] = int(count)
         counts[record_id] = per_class
 
         LOGGER.info(
@@ -332,11 +332,11 @@ def build_cache(
 
 def _write_class_record_table(path: Path, counts: dict[str, dict[str, int]]) -> None:
     """Write the class-by-record contingency table used by the P3 analysis."""
-    header = "record_id," + ",".join(CLASS_SYMBOLS) + ",total\n"
+    header = "record_id," + ",".join(AAMI_SYMBOLS) + ",total\n"
     lines = [header]
     for record_id in sorted(counts):
         row = counts[record_id]
-        values = [row[symbol] for symbol in CLASS_SYMBOLS]
+        values = [row[symbol] for symbol in AAMI_SYMBOLS]
         lines.append(f"{record_id}," + ",".join(map(str, values)) + f",{sum(values)}\n")
     path.write_text("".join(lines), encoding="utf-8")
     LOGGER.info("wrote %s", path)
@@ -356,10 +356,10 @@ def _write_manifest(path: Path, records: tuple[str, ...], counts: dict[str, dict
         "post_seconds": round(POST_SAMPLES / TARGET_FS, 4),
         "normalisation": "per-beat median subtraction, per-record IQR scale",
         "channel": PREFERRED_CHANNEL,
-        "class_symbols": list(CLASS_SYMBOLS),
+        "aami_symbols": list(AAMI_SYMBOLS),
         "total_beats": sum(sum(v.values()) for v in counts.values()),
         "class_totals": {
-            symbol: sum(v[symbol] for v in counts.values()) for symbol in CLASS_SYMBOLS
+            symbol: sum(v[symbol] for v in counts.values()) for symbol in AAMI_SYMBOLS
         },
     }
     path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
