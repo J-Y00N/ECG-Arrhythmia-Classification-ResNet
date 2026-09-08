@@ -48,7 +48,8 @@ class TrainConfig:
     num_workers: int = 0
     use_weighted_sampler: bool = True
     augment_probability: float = 0.60
-    augment_labels: tuple[int, ...] = (1, 2, 3, 4)
+    augment_labels: tuple[int, ...] = (1, 2, 3)   # 4 제거 (Q는 이제 없음)
+    # augment_labels: tuple[int, ...] = (1, 2, 3, 4)
     augmentation_mode: str = "on_the_fly"
     materialized_copies_per_sample: int = 1
     label_smoothing: float = 0.05
