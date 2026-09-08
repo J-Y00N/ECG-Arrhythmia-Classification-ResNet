@@ -5,8 +5,9 @@
 data/mitbih/*.csv
 data/mitdb/
 data/cache/*.npz
-outputs/*
 legacy/*
+notebooks/scratch_*.ipynb
+outputs/*
 !outputs/.gitkeep
 .vscode/settings.json
 .vscode/*.code-workspace
