@@ -66,18 +66,19 @@ class TrainConfig:
     strict_disjoint: bool = False
     validation_size: float = 0.20
     batch_size: int = 256
-    epochs: int = 30
+    epochs: int = 100
     learning_rate: float = 1e-3
     weight_decay: float = 1e-4
-    patience: int = 8
+    patience: int = 15
     seed: int = 42
     num_workers: int = 0
     use_class_weighted_loss: bool = True
     weight_power: float = 0.5
     use_weighted_sampler: bool = False
     augment_probability: float = 0.60
+    disable_early_stopping: bool = False
     augment_labels: tuple[int, ...] = (1, 2, 3)
-    augmentation_mode: str = "on_the_fly"
+    augmentation_mode: str = "none"
     materialized_copies_per_sample: int = 1
     label_smoothing: float = 0.05
     show_progress: bool = False
@@ -96,7 +97,8 @@ class TrainConfig:
         else:
             rebalancing = "noreweight"
         strict = "-strict" if self.strict_disjoint else ""
-        return f"{self.protocol}{strict}-{self.augmentation_mode}-{rebalancing}-seed{self.seed}"
+        stopping = "-fullrun" if self.disable_early_stopping else ""
+        return f"{self.protocol}{strict}-{self.augmentation_mode}-{rebalancing}{stopping}-seed{self.seed}"
 
     def resolved_output_dir(self) -> Path:
         if self.output_dir is not None:
@@ -375,12 +377,31 @@ def run_training(config: TrainConfig) -> dict[str, Any]:
             best_epoch = epoch
             best_state = {name: tensor.detach().cpu().clone() for name, tensor in model.state_dict().items()}
 
-        if early_stopping.step(selection_f1):
+        stop_now = early_stopping.step(selection_f1)
+        if stop_now and not config.disable_early_stopping:
             print(f"Early stopping triggered at epoch {epoch}.")
             break
 
     if best_state is None:
         raise RuntimeError("Training did not produce a valid checkpoint.")
+
+    # The model currently holds its final-epoch weights. Scoring them before
+    # restoring the best checkpoint costs one extra pass and yields a quantity
+    # the rest of the project has no other way to measure: how much the network
+    # gives up by continuing to fit the training recordings past its best
+    # validation epoch. The prediction is that this gap is larger under the
+    # inter-patient protocol, where overfitting to training patients is paid for
+    # directly, than under intra-patient, where the test recordings were seen
+    # during training and overfitting to them is partly rewarded.
+    final_state = {name: tensor.detach().cpu().clone() for name, tensor in model.state_dict().items()}
+    final_epoch = len(history_rows)
+    final_metrics = evaluate_model(
+        model=model,
+        dataloader=test_loader,
+        criterion=criterion,
+        device=device,
+    )
+    torch.save(final_state, output_dir / "final_model.pt")
 
     model.load_state_dict(best_state)
     model.to(device)
@@ -430,6 +451,7 @@ def run_training(config: TrainConfig) -> dict[str, Any]:
 
     test_scored = scored_classes(bundle.y_test)
     test_macro_f1_scored = macro_f1_from_confusion(test_metrics["confusion_matrix"], test_scored)
+    final_macro_f1_scored = macro_f1_from_confusion(final_metrics["confusion_matrix"], test_scored)
 
     config_payload = asdict(config)
     config_payload["output_dir"] = str(output_dir)
@@ -437,6 +459,12 @@ def run_training(config: TrainConfig) -> dict[str, Any]:
     config_payload["run_name"] = config.run_name()
     config_payload["device"] = str(device)
     config_payload["best_epoch"] = best_epoch
+    config_payload["final_epoch"] = final_epoch
+    config_payload["stopped_by"] = (
+        "epoch_limit" if final_epoch >= config.epochs else "early_stopping"
+    )
+    config_payload["final_test_accuracy"] = float(final_metrics["accuracy"])
+    config_payload["final_test_macro_f1"] = float(final_metrics["macro_f1"])
     config_payload["best_valid_macro_f1"] = best_valid_f1
     config_payload["class_symbols"] = list(CLASS_SYMBOLS)
     config_payload["observation_symbol"] = OBSERVATION_SYMBOL
@@ -460,6 +488,10 @@ def run_training(config: TrainConfig) -> dict[str, Any]:
         "test_accuracy": float(test_metrics["accuracy"]),
         "test_macro_f1": float(test_metrics["macro_f1"]),
         "test_macro_f1_scored": float(test_macro_f1_scored),
+        "final_epoch": final_epoch,
+        "final_test_accuracy": float(final_metrics["accuracy"]),
+        "final_test_macro_f1": float(final_metrics["macro_f1"]),
+        "final_test_macro_f1_scored": float(final_macro_f1_scored),
     }
 
 
@@ -510,6 +542,14 @@ def parse_args() -> TrainConfig:
         "--disable-augmentation",
         action="store_true",
         help="Alias for --augmentation-mode none.",
+    )
+    parser.add_argument(
+        "--disable-early-stopping",
+        action="store_true",
+        help=(
+            "Train for the full epoch budget. The best checkpoint is still saved and "
+            "scored, so this only changes how far the final-epoch model is allowed to drift."
+        ),
     )
     parser.add_argument(
         "--show-progress",
@@ -584,6 +624,7 @@ def parse_args() -> TrainConfig:
         patience=args.patience,
         seed=args.seed,
         num_workers=args.num_workers,
+        disable_early_stopping=args.disable_early_stopping,
         use_class_weighted_loss=not args.disable_class_weighted_loss,
         weight_power=args.weight_power,
         use_weighted_sampler=args.enable_weighted_sampler,
@@ -603,7 +644,9 @@ def main() -> None:
         f"best_epoch={result['best_epoch']} | "
         f"best_valid_macro_f1={result['best_valid_macro_f1']:.4f} | "
         f"test_accuracy={result['test_accuracy']:.4f} | "
-        f"test_macro_f1={result['test_macro_f1']:.4f}"
+        f"test_macro_f1={result['test_macro_f1']:.4f} | "
+        f"final_epoch={result['final_epoch']} | "
+        f"final_test_macro_f1={result['final_test_macro_f1']:.4f}"
     )
 
 

@@ -310,7 +310,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate EDA, method, and result figures for the ECG project.")
     parser.add_argument("--train-csv", type=Path, default=PROJECT_ROOT / "data" / "mitbih" / "mitbih_train.csv")
     parser.add_argument("--test-csv", type=Path, default=PROJECT_ROOT / "data" / "mitbih" / "mitbih_test.csv")
-    parser.add_argument("--run-dir", type=Path, default=PROJECT_ROOT / "outputs" / "baseline_run")
+    # parser.add_argument("--run-dir", type=Path, default=PROJECT_ROOT / "outputs" / "baseline_run")
+    parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, default=PROJECT_ROOT / "docs" / "assets")
     parser.add_argument(
         "--augment-labels",
