@@ -7,8 +7,12 @@ data/mitdb/
 data/cache/*.npz
 legacy/*
 notebooks/scratch_*.ipynb
-outputs/*
-!outputs/.gitkeep
+# outputs/*
+# !outputs/.gitkeep
+outputs/**/*.pt
+outputs/**/*.pth
+outputs/_pilot/
+outputs/_pilot_v1/
 .vscode/settings.json
 .vscode/*.code-workspace
 

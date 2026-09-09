@@ -145,8 +145,10 @@ def record_class_distribution(
     return distribution
 
 
-def class_weights(labels: np.ndarray, min_support: int = 50) -> torch.Tensor:
-    """Inverse-frequency class weights for a weighted loss.
+def class_weights(
+    labels: np.ndarray, min_support: int = 50, power: float = 0.5
+) -> torch.Tensor:
+    """Class weights for a weighted loss, raised to ``power``.
 
     Preferred to oversampling in the inter-patient setting. Minority classes
     here are concentrated in a handful of recordings -- record 208 supplies
@@ -155,15 +157,28 @@ def class_weights(labels: np.ndarray, min_support: int = 50) -> torch.Tensor:
     times. Reweighting the loss achieves the same rebalancing without
     duplicating anything.
 
+    ``power`` controls how far the rebalancing goes. At 1.0 the weights are
+    plain inverse frequency, which equalises the *total* loss contribution of
+    every class; on this data that means a fusion beat counts as much as
+    ninety-eight normal beats, and training collapses onto the rare classes
+    within a single epoch. At 0.0 the weights are uniform. The default of 0.5
+    compresses the ratio to roughly ten to one, which lifts the minority
+    classes without handing them the objective.
+
+    The exponent is not a nuisance parameter to tune away. How much
+    rebalancing a dataset tolerates is itself a measurement of how badly its
+    classes are nested inside individual recordings, so it is exposed on the
+    command line and recorded in every run's configuration.
+
     Classes with fewer than ``min_support`` training beats receive zero weight,
     which removes them from the loss entirely. With four classes this floor
     should never fire -- the smallest, fusion, holds a few hundred training
     beats -- and it is kept only as a guard against a validation record split
-    that strips a class almost bare. It exists because inverse frequency
-    equalises the *total* contribution of every class, so a class reduced to a
-    handful of beats would otherwise be weighted into the hundreds and
-    destabilise training on its own.
+    that strips a class almost bare.
     """
+    if power < 0.0:
+        raise ValueError(f"power must be >= 0, got {power}")
+
     counts = np.bincount(labels, minlength=NUM_CLASSES).astype(np.float64)
     eligible = counts >= max(1, int(min_support))
     if not eligible.any():
@@ -172,7 +187,8 @@ def class_weights(labels: np.ndarray, min_support: int = 50) -> torch.Tensor:
         )
 
     weights = np.zeros(NUM_CLASSES, dtype=np.float64)
-    weights[eligible] = counts[eligible].sum() / (eligible.sum() * counts[eligible])
+    inverse_frequency = counts[eligible].sum() / (eligible.sum() * counts[eligible])
+    weights[eligible] = inverse_frequency**float(power)
     return torch.as_tensor(weights, dtype=torch.float32)
 
 
