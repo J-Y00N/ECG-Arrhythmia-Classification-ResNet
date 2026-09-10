@@ -1,234 +1,684 @@
-# Experiment Report
+# Split Protocol and Representation in MIT-BIH Heartbeat Classification
+
+> **Draft, v0.2.0-dev.** The experimental matrix is complete; the representation
+> arm and the post-hoc uncertainty analysis are not. Sections marked *pending*
+> are placeholders. Figures are not yet regenerated and are omitted.
 
 ## Abstract
 
-This report presents the results of a refactored ECG arrhythmia classification pipeline for five-class heartbeat recognition on MIT-BIH beat-level data. The original notebook-centered workflow was reorganized into a reusable research codebase with modular training, augmentation ablation, artifact export, and figure generation. Three augmentation settings were evaluated for 50 epochs on Apple Silicon with PyTorch `MPS`: no augmentation, on-the-fly augmentation, and materialized augmentation. All settings achieved strong performance above `0.97` test accuracy. The best result was obtained with materialized augmentation, reaching `0.9746` accuracy, `0.8763` macro F1, and `0.9866` label ranking average precision. The experiments show that the refactored pipeline is stable and reproducible, while also providing clearer support for class-imbalance analysis and GitHub-ready documentation.
+An earlier version of this project reproduced a 1D residual CNN on MIT-BIH
+heartbeat data and reported 0.9746 accuracy and 0.8763 macro F1. Those numbers
+were obtained from a widely used preprocessed CSV release which discards record
+identifiers, and whose train and test halves stand in an exact 80:20 ratio,
+indicating a beat-level rather than a patient-level split. Patient-level
+evaluation is not merely absent from that release; it is impossible, because the
+information required to perform it has been removed from the file.
 
-**Keywords:** ECG classification, arrhythmia detection, MIT-BIH, deep transferable representation, data augmentation, PyTorch
+This work rebuilds the pipeline from the raw PhysioNet records so that the
+recording becomes an explicit factor in the design rather than an invisible
+confounder, and measures the consequence of the split protocol while holding
+architecture, preprocessing and augmentation fixed. Under the de Chazal
+inter-patient partition the same network reaches a macro F1 of 0.450 ± 0.023
+against 0.934 ± 0.009 under a beat-level split of the same beats: a gap of 0.48.
+
+The gap is not uniform. Normal beats lose 0.03 and ventricular ectopic beats
+0.17, while supraventricular ectopic and fusion beats fall from 0.91 and 0.81 to
+exactly zero. Three findings explain the pattern. First, minority classes are
+nested inside a handful of recordings: the effective number of contributing
+records, measured by the inverse Simpson index, is 21.0 for normal beats but
+1.24 for fusion, with a single recording supplying 90% of the training half's
+fusion beats. Second, the representation chosen here — a fixed window centred on
+the R peak — excludes inter-beat timing, and supraventricular ectopy is defined
+by prematurity rather than by morphology; the previous R peak falls inside the
+window for 0.001% of beats. Third, and consequently, supraventricular beats are
+identifiable only through patient-specific morphology, which a beat-level split
+makes available and a patient-level split removes.
+
+Four standard procedures are shown to fail under this structure: inverse-frequency
+class weighting collapses training entirely, model selection cannot be performed
+on the fusion class, post-hoc prior correction cannot recover the gain obtained
+by oversampling, and the choice of window silently deletes a class. A single
+principle organises the failures: quantities measured on an absolute scale are
+patient-dependent, and only ratios are portable across patients.
+
+**Keywords:** ECG classification, MIT-BIH, inter-patient evaluation, class-patient
+nesting, evaluation design, AAMI EC57
+
+---
 
 ## 1. Introduction
 
-Electrocardiogram classification is a common benchmark task in biomedical machine learning, particularly for arrhythmia detection under strong class imbalance. This project focuses on five-class heartbeat classification using beat-level ECG segments from the MIT-BIH Arrhythmia Database.
+### 1.1 What prompted the rebuild
 
-The main contribution of the present work is not a new model family, but the refactoring of a previously notebook-driven implementation into a reusable and report-oriented codebase. The refactored system separates data loading, augmentation, model definition, training, evaluation, and figure generation into maintainable modules while preserving the original problem setting.
+The predecessor of this report used `mitbih_train.csv` and `mitbih_test.csv`
+from a public preprocessed release of the MIT-BIH Arrhythmia Database. Each row
+holds 187 signal samples and one label, and nothing else. Two properties of that
+file motivated the present work:
 
-The five target classes are:
+1. **No record identifier.** Which recording a beat came from is not stored, so
+   a patient-disjoint split cannot be constructed after the fact.
+2. **An exact 80:20 train-test ratio.** Recordings contribute unequal numbers of
+   beats, so a patient-wise partition cannot land on exactly 80%. The ratio is
+   evidence of a beat-level split.
 
-- Normal beat
-- Supraventricular ectopic beat
-- Ventricular ectopic beat
-- Fusion beat
-- Unknown or unclassifiable beat
+Together these imply that beats from the same patient appear in both halves. A
+classifier can then reach the reported accuracy by recognising individual
+patients' waveform idiosyncrasies rather than arrhythmia morphology, and the
+reported figure carries no information about behaviour on a new patient.
 
-The model design is informed by the heartbeat classification architecture proposed in *ECG Heartbeat Classification: A Deep Transferable Representation* [1]. The current implementation preserves the overall 1D residual heartbeat-classification design while introducing practical modifications in normalization, regularization, and classifier-head structure as part of the refactoring process. The dataset foundation follows the MIT-BIH Arrhythmia Database [2], the broader PhysioNet resource [3], and the MIT-BIH dataset distribution page hosted by PhysioNet [4].
+### 1.2 What this work does, and does not, claim
 
-## 2. Data and Method
+This project does **not** replace an intra-patient evaluation with an
+inter-patient one and declare the former invalid. It makes the choice between
+them an experimental factor and measures its consequence, holding preprocessing,
+architecture and augmentation fixed across both arms.
 
-### 2.1 Dataset
+The earlier CSV-based result is excluded from that comparison, but not because
+beat-level evaluation is meaningless. It is excluded because it differs from the
+present work in four respects at once — data source, beat extraction, paced-record
+handling and split protocol — and its position cannot be attributed to any one of
+them. It is recorded in Appendix A as motivation, not as a comparison arm.
 
-The experiments use `data/mitbih/mitbih_train.csv` and `data/mitbih/mitbih_test.csv`. Each heartbeat is represented as a vector of length `187`. A validation subset corresponding to `10%` of the training split is used during optimization.
+### 1.3 Contributions
 
-The class distribution is highly imbalanced, with the majority of samples belonging to the normal-beat class. This imbalance motivates both weighted sampling and augmentation-based comparison.
+- A pipeline rebuilt from raw WFDB records that preserves the recording identity
+  of every beat, reproducing published DS1/DS2 class counts to within two beats.
+- A controlled measurement of the intra- versus inter-patient gap, decomposed by
+  class, with the decomposition explained by two independent mechanisms.
+- A quantification of class-patient nesting, and a demonstration that it
+  invalidates four standard procedures.
+- One hypothesis stated in advance, tested, and refuted.
 
-Figure 1 illustrates the original class distribution of the training split.
+---
 
-<p align="center">
-  <img src="assets/eda/eda_class_distribution.png" alt="Figure 1" width="760">
-</p>
+## 2. Data
 
-*Figure 1. Original class distribution of the MIT-BIH training split, showing the dominance of normal beats over minority arrhythmia classes.*
+### 2.1 Source and record selection
 
-Figure 2 shows representative heartbeat waveforms from the five target classes.
+Records are read directly from the MIT-BIH Arrhythmia Database via WFDB. The
+modified limb lead II channel is selected **by name** rather than by index, which
+handles record 114 — whose two signals are reversed relative to every other
+recording — without a special case.
 
-<p align="center">
-  <img src="assets/eda/eda_representative_beats.png" alt="Figure 2" width="760">
-</p>
+Following the AAMI EC57 recommendation, the four recordings containing paced
+beats (102, 104, 107, 217) are excluded, leaving 44. Records 102 and 104 have no
+MLII channel at all, surgical dressings having forced the use of V5, so they
+could not have been loaded in any case.
 
-*Figure 2. Representative beat waveforms for the five heartbeat classes used in the classification task.*
+### 2.2 Class definitions
 
-### 2.2 Model
+AAMI EC57 groups the database's beat annotations into five classes (N, S, V, F,
+Q). Once the paced recordings are removed, the symbols `/` and `f` disappear
+entirely and the Q class retains only the literal `Q` annotation: **15 beats
+across the whole database**, all of them baseline wander or electrode transients.
 
-The classifier is a refactored 1D convolutional neural network with residual connections, implemented in `ecg_classification/model.py`. The network receives a single heartbeat waveform and outputs one of the five target labels.
+The model therefore has a **four-unit head**. de Chazal et al. dropped Q for this
+reason and the inter-patient literature has followed since; a recent study
+likewise treats a three-class (N/S/V) macro F1 as its interpretive endpoint
+because only those classes carry substantial support.
 
-Figure 3 summarizes the refactored model structure and training flow.
+This also constitutes a further reason the earlier CSV results are not
+comparable. That release retained the paced recordings, so its Q class held
+roughly eight thousand paced beats — a visually distinctive and easily learned
+category making up about 7% of the data — rather than a handful of artefacts.
 
-<p align="center">
-  <img src="assets/method/method_model_architecture.png" alt="Figure 3" width="760">
-</p>
+The 15 Q beats are retained as an **observation set**. They are never trained on,
+never validated on and never scored, but are passed through the trained model so
+that the behaviour of a classifier meeting pure artefact can be inspected. This
+is a calibration question rather than a classification one; see §6.
 
-*Figure 3. Overview of the refactored 1D CNN architecture with residual connections and the training pipeline used in the present implementation.*
+### 2.3 Preprocessing
 
-### 2.3 Augmentation strategy
+Only one property is inherited from the previous pipeline: a beat is 187 samples
+long, because the network's classifier was built for that length. Note that this
+is a choice made for comparability and not a technical constraint — global
+average pooling makes the architecture independent of input length. Every other
+decision below is made here on physiological grounds.
 
-The refactored pipeline supports three augmentation modes:
+| Step | Choice | Rationale |
+|---|---|---|
+| Resampling | 360 → 250 Hz, `resample_poly(25, 36)` | 187 samples then span 0.748 s, roughly one cardiac cycle. Polyphase resampling applies an anti-aliasing filter |
+| Window | R peak at index 62; 62 before, 125 after | 0.248 s covers the P wave and PR interval; 0.500 s covers the QRS complex and T wave |
+| R-peak source | Expert annotations | Removes detector error as a confounder |
+| Normalisation | Per-beat median subtraction, then division by the record's interquartile range | The first absorbs baseline wander without a filter; the second removes between-record gain differences while preserving amplitude contrast within a record |
+| Boundary beats | Dropped, not zero-padded | Padding would hand the network a flat segment that means nothing |
 
-- `none`
-- `on_the_fly`
-- `materialized`
+The window deliberately does not depend on the local RR interval, so the
+representation carries beat morphology and not rhythm. §4.6 examines what that
+decision costs.
 
-The augmentation module applies time stretching, amplitude scaling, and Gaussian noise injection.
+### 2.4 Validation against published counts
 
-On-the-fly augmentation transforms a sample only when it is fetched during training. As a result, it increases the diversity of the observed training distribution across epochs, but it does not create a fixed enlarged dataset. Materialized augmentation, in contrast, generates synthetic beats before training and appends them to the training split, making the expanded sample counts explicit and directly reportable.
+The rebuilt pipeline yields 100,694 beats across 44 records. Comparison with the
+published DS1/DS2 distribution:
 
-In the current materialized setting, one augmented copy was added for each selected minority-class sample.
+| Class | Published DS1 | This work, DS1 | Published total | This work, total |
+|---|---:|---:|---:|---:|
+| N | 45,868 | 45,848 | 90,126 | 90,088 |
+| S | 942 | 944 | 2,779 | 2,781 |
+| V | 3,787 | 3,788 | **7,008** | **7,008** |
+| F | 415 | 414 | 803 | 802 |
+| Q | 8 | 8 | **15** | **15** |
 
-Figure 4 shows the class-count change under materialized augmentation.
+Ventricular and unclassifiable counts match exactly; the others differ by at most
+two beats, accounted for by beats whose window would overrun a record boundary
+and which are therefore dropped. The AAMI mapping, the record exclusions and the
+DS1/DS2 partition are thus independently verified.
 
-<p align="center">
-  <img src="assets/eda/eda_augmentation_class_distribution.png" alt="Figure 4" width="760">
-</p>
+### 2.5 Class-patient nesting
 
-*Figure 4. Class counts before and after materialized augmentation, where minority classes are expanded while the majority normal-beat class is left unchanged.*
+Class frequency understates the problem. Minority-class beats are not spread
+across recordings; they are concentrated in a few.
 
-Figure 5 visualizes waveform-level changes introduced by augmentation.
+Let $p_r$ be the share of class $c$'s beats contributed by record $r$. The
+**effective number of contributing records** is the inverse Simpson index
 
-<p align="center">
-  <img src="assets/eda/eda_augmentation_waveform_examples.png" alt="Figure 5" width="760">
-</p>
+$$
+N_{\text{eff}}(c) \;=\; \frac{1}{\sum_r p_r^{2}}
+$$
 
-*Figure 5. Example heartbeat waveforms before and after augmentation, illustrating the morphological variation introduced by the augmentation module.*
+which equals the record count under a uniform distribution and falls toward one
+as a single record dominates.
 
-Table 1 reports the effective class counts used in the materialized setting.
+| Class | DS1 beats | **N_eff** | Reading |
+|---|---:|---:|---|
+| N | 45,848 | **21.0** | essentially all 22 recordings |
+| V | 3,788 | **7.2** | seven recordings' worth |
+| S | 944 | **4.5** | four to five |
+| **F** | **414** | **1.24** | **effectively one patient** |
 
-| Class | Original train count | Materialized train count |
-|---|---:|---:|
-| Normal beat | `65223` | `65223` |
-| Supraventricular ectopic beat | `2001` | `4002` |
-| Ventricular ectopic beat | `5209` | `10418` |
-| Fusion beat | `577` | `1154` |
-| Unknown or unclassifiable beat | `5788` | `11576` |
+Record 208 supplies 90% of DS1's fusion beats; record 213 supplies 93% of DS2's.
+Under the inter-patient protocol, the fusion task is therefore *learn from one
+patient, generalise to one other patient*. Any performance figure for that class
+rests on a patient-level sample size of one.
 
-*Table 1. Training-set class counts before and after materialized augmentation.*
+The same statement holds for the training data as for the evaluation data: a
+class does not hold as much information as its beat count suggests, because
+beats within a recording are not independent observations.
 
-## 3. Experimental Setup
+---
 
-Three 50-epoch runs were executed on Apple Silicon using PyTorch `MPS`:
+## 3. Method
 
-- `outputs/baseline_run`
-- `outputs/baseline_run_no_aug`
-- `outputs/baseline_run_static_aug`
+### 3.1 Protocols
 
-These run directories are local experiment artifacts used for analysis and are typically not tracked in the public repository because `outputs/*` is ignored.
+Both arms consume identical preprocessing, so any difference is attributable to
+the split alone.
 
-Shared hyperparameters were:
+| Protocol | Construction |
+|---|---|
+| **inter** | de Chazal partition: DS1 (22 records) for training, DS2 (22 records) for test. The validation half is carved out of DS1 **by record** |
+| **intra** | All beats pooled, class-stratified 80:20 beat-level split, reproducing the public release's split style inside this pipeline |
 
-- batch size: `256`
-- learning rate: `0.001`
-- weight decay: `0.0001`
-- patience: `8`
-- weighted sampler: enabled
-- label smoothing: `0.05`
-- device: `mps`
+Validation is split at the record level under `inter` because holding out beats
+from recordings the model also trains on would reintroduce, at the point of model
+selection, exactly the leakage the protocol exists to remove.
 
-The evaluation pipeline reports loss, accuracy, macro F1, label ranking average precision, label ranking loss, coverage error, confusion matrices, and class-wise reports.
+### 3.2 Model
+
+The architecture is unchanged from the version used with the CSV pipeline: a 1D
+residual CNN with a convolutional stem, residual blocks, global average pooling
+and a two-layer classifier head. No layer, kernel size or channel count was
+modified. Every difference in results is therefore attributable to the data and
+the protocol.
+
+### 3.3 Augmentation
+
+The reference paper does not describe an augmentation procedure, so the
+augmentation here is of our own design and is not a reproduction of prior work.
+Three modes are compared:
+
+| Mode | Beat count | Operation |
+|---|---|---|
+| `none` | unchanged | — |
+| `on_the_fly` | **unchanged** | eligible beats are *replaced* by a variant with probability 0.6 |
+| `materialized` | **increased** | augmented copies of eligible beats are *appended* |
+
+The distinction matters for attribution. `none` versus `on_the_fly` isolates
+invariance injection at fixed counts; `materialized` additionally changes the
+class prior, so it confounds invariance with rebalancing.
+
+**A correction carried out during this work.** The previous augmentation clipped
+its output to [0, 1], which was correct while beats were min-max normalised
+inside a ten-second window. Under the present normalisation beats span roughly
+−14 to +14, and that same clip saturated 9.5% of samples, flattening every R peak
+and S trough — removing the QRS complex from precisely the minority-class copies
+the augmentation existed to produce. Separately, time stretching moved the R peak
+by up to 19 samples with a systematic bias of −3.4 samples on ventricular beats,
+undoing the alignment the segmentation was designed to guarantee. Both are fixed;
+the stretch now re-cuts the window around the peak's new position and pads with
+the edge value, and the noise scale was re-expressed in units of the record IQR.
+
+The general lesson is recorded because it recurs: **an augmentation procedure
+cannot be specified independently of the representation it acts on.** Where the
+provenance of a representation is undocumented, the augmentation built on it is
+not reproducible either.
+
+### 3.4 Rebalancing
+
+Two mechanisms are compared.
+
+**Loss weighting.** Weights are inverse frequency raised to an exponent $\beta$:
+
+$$
+w_c \;\propto\; \left( \frac{N}{n_c} \right)^{\beta}
+$$
+
+Weighted risk minimisation is equivalent to *unweighted* minimisation under a
+tilted class prior. Writing $\pi_c$ for the class frequencies,
+
+$$
+R_w(f) \;=\; \mathbb{E}\!\left[ w_Y \, \ell\big(f(X), Y\big) \right]
+\;=\; \sum_c \pi_c \, w_c \, \mathbb{E}\!\left[ \ell \mid Y = c \right]
+\;\propto\; \sum_c \tilde{\pi}_c \, \mathbb{E}\!\left[ \ell \mid Y = c \right],
+\qquad \tilde{\pi}_c \propto w_c \, \pi_c .
+$$
+
+Substituting $w_c \propto \pi_c^{-\beta}$ gives
+
+$$
+\tilde{\pi}_c \;\propto\; \pi_c^{\,1-\beta}.
+$$
+
+At $\beta = 0$ the weights are uniform and the model sees the true base rate; at
+$\beta = 1$ the base rate is removed entirely and every class contributes an
+equal share of the loss.
+
+**Oversampling.** A weighted sampler draws indices with replacement at rates
+inversely proportional to class frequency. This is *not* equivalent to loss
+weighting: batches acquire a different class composition, which changes the
+statistics the batch-normalisation layers learn; and Adam partially absorbs a
+large loss coefficient through its per-parameter normalisation while it does not
+absorb repeated gradient steps.
+
+### 3.5 Model selection
+
+Selection is fixed to N, S and V. Fusion cannot support it: a validation split
+either takes record 208 — leaving training with about forty fusion beats — or it
+does not, leaving validation with almost none. The two requirements are
+incompatible and no validation size resolves it.
+
+Deriving the scored set per split instead makes it vary by seed. At a validation
+size of 0.10 one seed scored on N and S while another scored on N and V, so the
+seeds were selecting their models against different objectives and averaging
+across them meant nothing. Selection is restricted; **reporting is not** — test
+metrics cover all four classes.
+
+### 3.6 Experimental matrix
+
+Eighteen runs: 3 augmentation modes × 2 protocols × 3 seeds, with β = 0, a
+100-epoch budget and early stopping at patience 15. Two comparison runs add the
+oversampler and the strict subject-disjoint sensitivity check. Every run records
+whether it stopped by early stopping or by the epoch limit; all eighteen stopped
+early, so the budget never bound.
+
+---
 
 ## 4. Results
 
-### 4.1 Overall performance
+### 4.1 The protocol gap
 
-Table 2 summarizes the final test-set performance across the three augmentation settings.
+Test macro F1 at the best validation checkpoint, mean ± sd over three seeds:
 
-| Setting | Accuracy | Macro F1 | LRAP | Ranking loss | Coverage error |
-|---|---:|---:|---:|---:|---:|
-| On-the-fly augmentation | `0.9709` | `0.8714` | `0.9847` | `0.0086` | `1.0343` |
-| No augmentation | `0.9736` | `0.8736` | `0.9860` | `0.0082` | `1.0327` |
-| Materialized augmentation | `0.9746` | `0.8763` | `0.9866` | `0.0077` | `1.0310` |
+| Augmentation | intra | inter | **Gap** |
+|---|---:|---:|---:|
+| `none` | 0.934 ± 0.009 | 0.450 ± 0.023 | **0.485** |
+| `on_the_fly` | 0.937 ± 0.012 | 0.450 ± 0.026 | **0.487** |
+| `materialized` | 0.940 ± 0.012 | 0.475 ± 0.037 | **0.465** |
 
-*Table 2. Final test-set comparison of the three augmentation settings.*
+Identical model, identical preprocessing, identical augmentation. Changing only
+how beats are assigned to the two halves costs roughly half the reported macro F1.
 
-All three settings achieved strong performance, with test accuracy above `0.97`. Materialized augmentation produced the best overall result, although the margin over the no-augmentation setting remained modest.
+Seed-to-seed variance is about 2.5 times larger under `inter`. Which recordings
+land in validation determines how many minority-class beats remain for training,
+and because those beats sit in a few recordings the effect is amplified.
 
-Figure 6 compares the three runs across the main metrics.
+### 4.2 Per-class decomposition
 
-<p align="center">
-  <img src="assets/result/result_augmentation_comparison.png" alt="Figure 6" width="760">
-</p>
+Seed 42, `none`:
 
-*Figure 6. Test-set comparison of on-the-fly augmentation, no augmentation, and materialized augmentation across the main evaluation metrics.*
+| Class | intra F1 | inter F1 | Δ | Morphologically distinct? | N_eff |
+|---|---:|---:|---:|---|---:|
+| N | 0.996 | 0.964 | −0.03 | — | 21.0 |
+| V | 0.983 | 0.813 | −0.17 | **yes** — wide QRS | 7.2 |
+| **S** | 0.911 | **0.000** | **−0.91** | no — QRS is normal | 4.5 |
+| **F** | 0.807 | **0.000** | **−0.81** | no — intermediate | **1.24** |
 
-### 4.2 Best-performing configuration
+Two mechanisms account for the ordering, and they are different mechanisms:
 
-The best-performing run was `outputs/baseline_run_static_aug`, which achieved:
+- **V survives on morphology.** A ventricular beat has a wide, distorted QRS
+  complex that does not depend on knowing the patient.
+- **S fails for want of timing.** A supraventricular ectopic beat arises above
+  the ventricles, so ventricular conduction and hence QRS morphology are normal.
+  It is defined by prematurity. With timing excluded from the representation,
+  patient-specific morphology is the only remaining discriminative signal — and a
+  beat-level split makes that signal available while a patient-level split does
+  not. The 0.911 → 0.000 collapse is thus a direct measurement of how much of the
+  intra-patient figure was patient memorisation.
+- **F fails on both counts.** Fusion beats are by definition intermediate between
+  normal and ventricular, so no characteristic form exists; and with N_eff = 1.24
+  whatever form there is must be learned from one patient.
 
-- accuracy: `0.9746`
-- macro F1: `0.8763`
-- LRAP: `0.9866`
-- ranking loss: `0.0077`
-- coverage error: `1.0310`
+The fusion result is consistent with the literature rather than anomalous. A 2026
+study reports F1 of 0.0659 for fusion on MIT-BIH for its proposed method and
+0.0253 for an SVM baseline, and 0.0000 for that baseline on INCART, describing
+the weakness as expected given the extreme rarity and heterogeneity of fusion
+morphologies. Several inter-patient studies omit the class entirely.
 
-These results indicate that explicit minority-class expansion can provide a small but consistent benefit when the training budget is sufficiently large.
+### 4.3 Training dynamics
 
-### 4.3 Class-wise performance
+| Protocol | Mean best epoch |
+|---|---:|
+| intra | **36.7** |
+| inter | **8.9** |
 
-Table 3 reports the per-class performance of the best-performing materialized augmentation run.
+The two protocols do not merely differ in score; they differ in the direction of
+the learning curve. Under `intra` validation performance continues improving past
+epoch 40. Under `inter` it peaks between epochs 1 and 7 and then declines.
 
-| Class | Precision | Recall | F1-score | Support |
-|---|---:|---:|---:|---:|
-| Normal beat | `0.9965` | `0.9761` | `0.9862` | `18118` |
-| Supraventricular ectopic beat | `0.6751` | `0.9083` | `0.7745` | `556` |
-| Ventricular ectopic beat | `0.9444` | `0.9627` | `0.9535` | `1448` |
-| Fusion beat | `0.5272` | `0.9568` | `0.6798` | `162` |
-| Unknown or unclassifiable beat | `0.9822` | `0.9932` | `0.9876` | `1608` |
+This is the memorisation mechanism visible in the optimisation trace. Continuing
+to fit the training recordings is *rewarded* when those recordings also furnish
+the test beats, and *paid for* when they do not.
 
-*Table 3. Class-wise performance of the best-performing materialized augmentation run.*
+### 4.4 Rebalancing strength
 
-Performance was strongest for `Normal beat`, `Ventricular ectopic beat`, and `Unknown or unclassifiable beat`. For the smallest classes, recall remained high while precision was comparatively lower, indicating that the classifier was sensitive to minority-class patterns but still prone to over-predicting them.
+Loss weighting was swept over β (inter, seed 42):
 
-Figure 7 provides the confusion matrix used for class-wise error analysis.
+| β | Weight ratio | Loss share (N/S/V/F) | train acc | test macro F1 |
+|---:|---:|---|---:|---:|
+| 0 | 1.0 | 89.5 / 1.2 / 8.3 / 0.9 % | 0.977 | **0.450** |
+| 0.25 | 3.1 | 80.6 / 3.2 / 13.6 / 2.6 % | 0.980 | 0.448 |
+| 0.5 | 9.9 | 65.7 / 7.7 / 20.0 / 6.6 % | 0.971 | 0.449 |
+| 0.75 | 31.3 | 45.2 / 15.5 / 25.0 / 14.4 % | 0.884 | 0.391 |
+| **1.0** | **98.4** | **25 / 25 / 25 / 25 %** | **0.118** | **0.220** |
 
-<p align="center">
-  <img src="assets/result/result_confusion_matrix.png" alt="Figure 7" width="760">
-</p>
+At β = 1 — plain inverse frequency, the textbook default — training collapses
+within a single epoch. Equalising the total loss contribution of every class
+means 414 fusion beats carry the same weight as 40,753 normal beats, and since
+those 414 come from essentially one patient the network cannot learn to
+discriminate them; predicting the rare classes indiscriminately becomes the
+faster way to reduce the weighted loss.
 
-*Figure 7. Confusion matrix of the trained classifier, showing strong recognition of major classes and remaining confusion in minority arrhythmia categories.*
+No degree of rebalancing improves on β = 0. **How much rebalancing a dataset
+tolerates is itself a measurement of how deeply its classes are nested inside
+individual recordings**, and is reported here as a result rather than tuned away.
 
-### 4.4 Training behavior
+Oversampling behaves differently. A single run (inter, seed 42) reaches 0.521
+against 0.444 for the unweighted loss, with supraventricular recall rising from
+0.00 to 0.67 while normal recall falls from 0.99 to 0.83.
 
-The three runs reached their best validation macro F1 at nearby epochs:
+### 4.5 A refuted hypothesis: post-hoc prior correction
 
-- `outputs/baseline_run`: best epoch `32`, validation macro F1 `0.8773`
-- `outputs/baseline_run_no_aug`: best epoch `31`, validation macro F1 `0.8878`
-- `outputs/baseline_run_static_aug`: best epoch `33`, validation macro F1 `0.8854`
+Because the tilt introduced by rebalancing is a known quantity, it can be undone
+at prediction time without retraining:
 
-Although the no-augmentation setting achieved the highest validation macro F1, the materialized augmentation run yielded the best final test-set performance. This suggests a small generalization gain from explicit minority-class expansion rather than a dramatic shift in optimization behavior.
+$$
+p_{\beta}(c \mid x) \;\propto\; \frac{p_{\text{model}}(c \mid x)}{\tilde{\pi}_c^{\,\beta}}
+$$
 
-Figure 8 shows the learning curves of the baseline run, and Figure 9 summarizes the final metric values. Although the experiment budget was configured for `50` epochs, the plotted curve ends earlier because training was stopped automatically by early stopping once validation macro F1 stopped improving within the configured patience window.
+**Hypothesis, stated before the test.** The oversampler's advantage is a shift of
+the decision threshold rather than a difference in what was learned; applying the
+correction above to the *unweighted* model's stored probabilities should therefore
+recover most of it.
 
-<p align="center">
-  <img src="assets/result/result_learning_curves.png" alt="Figure 8" width="760">
-</p>
+**Result.** It does not.
 
-*Figure 8. Training and validation learning curves for a run configured with a maximum of 50 epochs; the curve ends earlier because early stopping terminated training after convergence.*
+| β | macro F1 | N | S | V | F |
+|---:|---:|---:|---:|---:|---:|
+| 0 | 0.444 | 0.964 | 0.000 | 0.813 | 0.000 |
+| 0.5 | 0.441 | 0.953 | 0.003 | 0.809 | 0.000 |
+| 0.75 | 0.425 | 0.851 | 0.021 | 0.827 | 0.000 |
+| 1.0 | 0.307 | 0.324 | 0.084 | 0.815 | 0.005 |
+| 1.25 | 0.225 | 0.000 | 0.079 | 0.785 | 0.036 |
 
-<p align="center">
-  <img src="assets/result/result_metric_summary.png" alt="Figure 9" width="760">
-</p>
+*(oversampler reference: 0.521, S F1 with recall 0.67)*
 
-*Figure 9. Compact summary of the final evaluation metrics obtained from the trained classifier.*
+Macro F1 decreases monotonically and supraventricular F1 never exceeds 0.084.
+The hypothesis is refuted, and the reason is instructive: **prior correction is a
+monotone transformation of the model's scores, so it can only redistribute
+decisions along an existing ranking.** In the unweighted model the
+supraventricular score is almost always below the normal score, and no threshold
+recovers a separation that is not present. Oversampling must therefore have
+changed the ranking itself — consistent with the batch-composition and
+gradient-step arguments of §3.4 rather than with a threshold effect.
+
+### 4.6 Timing information audit
+
+Pre-RR intervals were computed from the stored R-peak positions, which are part
+of the cache and carry no class information.
+
+| Class | median pre-RR (s) | 25th pct |
+|---|---:|---:|
+| N | 0.768 | 0.672 |
+| **S** | **0.676** | **0.488** |
+| V | 0.512 | 0.452 |
+| F | 0.564 | 0.548 |
+
+The window reaches 0.248 s back from the R peak. **The previous R peak falls
+inside it for 0.0010% of beats** — one beat in a hundred thousand. Prematurity is
+present in the data, is discriminative, and is excluded by construction.
+
+Widening the window would admit it, at a cost. The fraction of beats whose
+previous R peak becomes visible, by window reach:
+
+| Reach (s) | N | S | V | F | Two beats back |
+|---:|---:|---:|---:|---:|---:|
+| 0.50 | 2.1% | 27.7% | 45.6% | 1.1% | 0.0% |
+| 0.65 | 19.7% | 46.7% | 90.6% | 93.3% | 0.1% |
+| **0.80** | **55.5%** | **98.6%** | 94.6% | 98.1% | 1.6% |
+| 1.00 | 83.8% | 99.5% | 98.2% | 98.8% | 5.9% |
+
+The N–S separation is widest near 0.80 s.
+
+**However, an absolute window cannot carry portable timing.** The number of
+neighbouring beats visible in a fixed-duration window is itself the patient's
+resting heart rate.
+
+The point is made sharply by the fusion class. On an absolute scale fusion beats
+look premature — a median pre-RR of 0.564 s against 0.768 s for normal beats. But
+almost all of them come from two recordings, and those two recordings are fast:
+
+| Record | Median RR | Rate | Role |
+|---|---:|---:|---|
+| **208** | 0.580 s | **103 bpm** | supplies 90% of DS1 fusion beats |
+| **213** | 0.556 s | **108 bpm** | supplies 93% of DS2 fusion beats |
+| 100 | 0.796 s | 75 bpm | typical |
+| 103 | 0.868 s | 69 bpm | typical |
+
+The fusion median of 0.564 s is indistinguishable from the resting interval of
+the two recordings that produce it. **Fusion beats are not early; the patients who
+have them are fast.** Normalised by each recording's local mean RR they sit at
+1.0, on top of the normal distribution.
+
+A model given absolute timing would therefore learn to detect fusion as *"a
+patient whose heart rate is high"*. That is patient recognition, not arrhythmia
+recognition, and it would transfer from DS1 to DS2 here only because records 208
+and 213 happen to share the trait — an accident of the partition rather than
+generalisation.
+
+This is why de Chazal separated the two: morphology from an absolute window,
+timing from separately normalised interval features. The present work arrived at
+the same conclusion independently, by a different route.
+
+### 4.7 Sensitivity: records 201 and 202
+
+Records 201 and 202 come from the same male subject, and the de Chazal partition
+places 201 in DS1 and 202 in DS2. The published inter-patient split is therefore
+not strictly subject-disjoint. Excluding record 202 changes test macro F1 from
+0.4443 to 0.4442. The caveat is real and its effect is negligible.
+
+---
 
 ## 5. Discussion
 
-The experiments support three main conclusions. First, the refactored pipeline is stable and reproducible across multiple augmentation settings. Second, augmentation should be interpreted differently depending on implementation mode: on-the-fly augmentation increases training diversity, whereas materialized augmentation creates a fixed and reportable expansion of minority-class data. Third, class imbalance remains the main modeling challenge, as minority classes exhibit strong recall but still lower precision than the majority classes.
+### 5.1 Four failures of standard procedure
 
-From a reporting perspective, materialized augmentation is particularly useful because it allows the class-count change to be described rigorously in both EDA and method sections. From a modeling perspective, its benefit in the current study is real but moderate, suggesting that further gains may come from calibration, loss reweighting, or class-specific decision analysis rather than from augmentation alone.
+| # | Procedure | Failure |
+|---|---|---|
+| 1 | Inverse-frequency class weighting | Collapses training; no exponent improves on none |
+| 2 | Validation-based model selection | Impossible for fusion — training and validation support are mutually exclusive |
+| 3 | Post-hoc prior correction | Cannot recover the oversampler's gain; a ranking that does not separate cannot be thresholded into one |
+| 4 | Fixed-window representation | Silently deletes a class whose definition is temporal |
 
-## 6. Conclusion
+None of these is a bug in the implementation. Each is a consequence of the same
+data structure, and each would have gone unnoticed under a beat-level split.
 
-The final 50-epoch MPS experiments show that the refactored ECG classification pipeline is fully operational and produces strong five-class classification performance on MIT-BIH.
+### 5.2 Absolute and normalised scales
 
-Among the tested settings, materialized augmentation produced the best overall result:
+Three axes of this project independently reached the same conclusion.
 
-- accuracy: `0.9746`
-- macro F1: `0.8763`
-- LRAP: `0.9866`
-- ranking loss: `0.0077`
-- coverage error: `1.0310`
+| Axis | Absolute — patient dependent | Normalised — patient invariant |
+|---|---|---|
+| **Amplitude** | raw millivolts | divided by the recording's IQR |
+| **Sample size** | beat count | `N_eff`, the inverse Simpson index |
+| **Timing** | pre-RR in seconds | pre-RR divided by the local mean |
 
-Overall, the refactored project now supports reproducible training, augmentation ablation, figure generation, and report-oriented experimental output within a cleaner research-code structure.
+That the same distinction emerged three times, from three unrelated starting
+points, suggests it is a property of the data rather than of any one analysis.
+
+### 5.3 Class imbalance and patient heterogeneity are one structure
+
+These are usually treated as separate problems. In this database they are not:
+minority-class beats are unevenly nested inside recordings, so any operation on
+the class axis is also an operation on the patient axis. Oversampling a class
+replicates a patient. Rebalancing a loss reweights a patient. `N_eff` is the
+quantity that makes the coupling explicit, and it is what explains why the class
+ordering of the protocol gap is not the class ordering of the frequencies.
+
+### 5.4 Limitations
+
+- **Timing is excluded from the representation.** Supraventricular performance is
+  therefore not comparable with the inter-patient literature, which uses RR
+  interval features throughout. This is a stated design condition, not an
+  oversight, but it does bound what the absolute figures mean.
+- **Expert R-peak annotations are assumed.** Substituting an automatic detector
+  would introduce localisation error that this work does not model.
+- **Subject, session and electrode placement are perfectly confounded.** The
+  database holds one recording per subject, so the components of between-recording
+  variation cannot be separated even in principle.
+- **Augmentation confounds two effects in the `materialized` mode.** Its
+  class-dependent multipliers change the prior as well as injecting invariance;
+  the two are separable only by a factorial design not run here.
+- **Fusion figures are unstable at any protocol.** A patient-level sample size of
+  one does not support a class-wise estimate.
+- **The 15 unclassifiable beats are observed, not scored.**
+
+---
+
+## 6. Pending work
+
+**Uncertainty quantification.** Beats are clustered within recordings, so a
+beat-level bootstrap treats roughly fifty thousand correlated observations as
+independent and will understate the confidence interval. The resampling unit
+should be the recording.
+
+Let $Y_{ij}$ be the correctness of beat $j$ in recording $i$, modelled as
+
+$$
+Y_{ij} = \mu + a_i + \varepsilon_{ij}, \qquad
+a_i \sim \left(0, \sigma_a^{2}\right), \quad
+\varepsilon_{ij} \sim \left(0, \sigma_\varepsilon^{2}\right),
+$$
+
+so that the intraclass correlation and the resulting design effect are
+
+$$
+\rho \;=\; \frac{\sigma_a^{2}}{\sigma_a^{2} + \sigma_\varepsilon^{2}},
+\qquad
+D_{\text{eff}} \;=\; 1 + (\bar{m} - 1)\,\rho,
+\qquad
+n_{\text{eff}} \;=\; \frac{n}{D_{\text{eff}}},
+$$
+
+with $\bar{m}$ the mean number of beats per recording. Estimating $\rho$ by REML
+or by the method of moments requires no sampling, and $D_{\text{eff}}$ predicts
+the ratio between the two interval widths — converting the argument for the
+cluster bootstrap from a claim into a check.
+
+**Capacity baselines.** An L2-regularised multinomial logistic regression on the
+same input and split — which is the MAP estimate under a Gaussian prior, so the
+capacity axis is also a prior-strength axis — and a 1-nearest-neighbour
+classifier as the memorisation-only extreme. The prediction is that the
+protocol gap widens with capacity.
+
+**Per-record decomposition and N_eff correlation.** Whether the inter-patient
+penalty is spread evenly across the 22 test recordings or concentrated in a few,
+and whether the class-wise penalty tracks `N_eff`.
+
+**Calibration.** Reliability curves and expected calibration error under both
+protocols, and the behaviour of the trained model on the 15 artefact beats. A
+classifier that is confidently wrong on a detached-electrode waveform is a
+clinically worse failure than one that is uncertain.
+
+**Representation as a second factor.** The narrow window (morphology only)
+against a normalised RR-ratio feature set, testing whether the gap shrinks by the
+amount attributable to the representation rather than to memorisation.
+
+## 7. Future work
+
+- A hierarchical model with the recording as a random effect would separate the
+  variance components of class and patient effects, formalising the observation
+  that oversampling does not increase effective patient diversity. Partial
+  pooling would shrink the estimate for a class supported by one patient and
+  widen its uncertainty automatically — which is what loss weighting attempted
+  here by an indirect route, and failed at.
+- A factorial design separating prior rebalancing from invariance injection.
+- Physiologically structured time warping: uniform stretching scales the QRS
+  complex along with everything else, whereas heart-rate variation compresses the
+  diastolic interval and shortens the QT interval while leaving QRS duration
+  largely unaffected.
+- Extension to INCART or the MIT-BIH Supraventricular database, to test whether
+  the nesting structure is a property of this database or of ambulatory
+  arrhythmia data in general.
+- Transfer of nuisance parameters across recordings as an augmentation. Note that
+  this, like any generative approach, cannot raise `N_eff`: a model fitted to one
+  patient's fusion beats produces that patient's fusion beats. **Information that
+  is absent cannot be synthesised.**
+
+---
+
+## Appendix A. Superseded results
+
+The previous version of this project used the public preprocessed CSV release and
+reported 0.9746 accuracy and 0.8763 macro F1 over five classes, with materialized
+augmentation, on a beat-level split.
+
+Those results are **not comparable** with the present ones and are excluded from
+every comparison in §4. They differ in four respects simultaneously:
+
+1. **Data source** — a preprocessed CSV of undocumented provenance rather than
+   the raw records.
+2. **Split protocol** — beat-level rather than record-level.
+3. **Class definition** — five classes including a Q class of roughly eight
+   thousand paced beats, rather than four.
+4. **Beat extraction and normalisation** — a rate-dependent window with min-max
+   scaling, rather than a fixed window with robust scaling.
+
+They are recorded here because they are the reason this work exists, not as a
+baseline. The code and artefacts that produced them are preserved at the git tag
+`v0.1.0-csv`.
+
+---
 
 ## References
 
-1. Kachuee M, Fazeli S, Sarrafzadeh M. *ECG Heartbeat Classification: A Deep Transferable Representation*. 2018 IEEE International Conference on Healthcare Informatics Workshops (ICHI-W), 2018. IEEE Xplore: https://ieeexplore.ieee.org/document/8419425. arXiv: https://arxiv.org/pdf/1805.00794.
-2. Moody GB, Mark RG. *The Impact of the MIT-BIH Arrhythmia Database*. IEEE Engineering in Medicine and Biology Magazine. 2001;20(3):45-50. DOI: 10.1109/51.932724.
-3. Goldberger AL, Amaral LAN, Glass L, Hausdorff JM, Ivanov PC, Mark RG, Mietus JE, Moody GB, Peng CK, Stanley HE. *PhysioBank, PhysioToolkit, and PhysioNet: Components of a New Research Resource for Complex Physiologic Signals*. Circulation. 2000;101(23):e215-e220.
-4. MIT-BIH Arrhythmia Database. PhysioNet. Available at: https://physionet.org/content/mitdb/1.0.0/ . DOI: 10.13026/C2F305.
+1. Kachuee M, Fazeli S, Sarrafzadeh M. *ECG Heartbeat Classification: A Deep
+   Transferable Representation.* IEEE ICHI-W, 2018. arXiv:1805.00794.
+2. de Chazal P, O'Dwyer M, Reilly RB. *Automatic Classification of Heartbeats
+   Using ECG Morphology and Heartbeat Interval Features.* IEEE Trans Biomed Eng.
+   2004;51(7):1196–1206.
+3. Moody GB, Mark RG. *The Impact of the MIT-BIH Arrhythmia Database.* IEEE Eng
+   Med Biol Mag. 2001;20(3):45–50. DOI: 10.1109/51.932724.
+4. Goldberger AL, et al. *PhysioBank, PhysioToolkit, and PhysioNet.* Circulation.
+   2000;101(23):e215–e220.
+5. MIT-BIH Arrhythmia Database. PhysioNet. https://physionet.org/content/mitdb/1.0.0/
+   DOI: 10.13026/C2F305.
+6. ANSI/AAMI EC57. *Testing and Reporting Performance Results of Cardiac Rhythm
+   and ST Segment Measurement Algorithms.* 1998.
+7. Huang H, Liu J, Zhu Q, Wang R, Hu G. *A New Hierarchical Method for
+   Inter-Patient Heartbeat Classification Using Random Projections and RR
+   Intervals.* BioMedical Engineering OnLine. 2014;13:90.
+8. Elkan C. *The Foundations of Cost-Sensitive Learning.* IJCAI, 2001.
+9. *DeepArrhythmia: Segment-Contextualized ECG Arrhythmia Classification via
+   Selective Evidence Acquisition.* arXiv:2605.16441. *(cited for fusion-class
+   performance; verify against the source before final submission)*

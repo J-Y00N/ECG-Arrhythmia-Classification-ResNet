@@ -73,7 +73,7 @@ class TrainConfig:
     seed: int = 42
     num_workers: int = 0
     use_class_weighted_loss: bool = True
-    weight_power: float = 0.5
+    weight_power: float = 0.0
     use_weighted_sampler: bool = False
     augment_probability: float = 0.60
     disable_early_stopping: bool = False
