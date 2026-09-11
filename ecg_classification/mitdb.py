@@ -27,6 +27,9 @@ Preprocessing decisions, and why
 4. Paced records are excluded per AAMI EC57, so the Q class is close to empty.
 5. Beats whose window runs past either end of the record are dropped rather
    than zero-padded, so no beat carries an artificial flat segment.
+6. Where the extraction window is longer than the model input, it is resampled
+   onto it. Which window applies is chosen by the representation arm; see
+   ``constants``.
 
 None of these affect the comparison of interest, because the intra-patient and
 inter-patient protocols both run through this same pipeline.
@@ -52,23 +55,28 @@ import numpy as np
 
 from .constants import (
     AAMI_RECORDS,
-    AAMI_SYMBOL_MAP,
-    BEAT_LENGTH,
     AAMI_SYMBOLS,
-    CLASS_RECORD_TABLE_NAME,
+    AAMI_SYMBOL_MAP,
     AAMI_SYMBOL_TO_INDEX,
+    BEAT_LENGTH,
+    CLASS_RECORD_TABLE_NAME,
     DS1,
     DS2,
+    EFFECTIVE_FS,
     INTRA_TEST_FRACTION,
     MIN_SCALE,
     MITDB_NAME,
+    NEEDS_RESAMPLE,
     POST_SAMPLES,
     PREFERRED_CHANNEL,
     PRE_SAMPLES,
     PROTOCOLS,
+    REPRESENTATION,
+    SAMPLE_LENGTH,
     SOURCE_FS,
     STRICT_DISJOINT_EXCLUDE,
     TARGET_FS,
+    WINDOW_LENGTH,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -203,9 +211,15 @@ def segment_beats(
     """Cut fixed windows centred on the annotated R peaks.
 
     Each beat spans ``PRE_SAMPLES`` before the R peak and ``POST_SAMPLES`` from
-    the R peak onward, for ``BEAT_LENGTH`` samples in total. Because the window
-    does not depend on the local RR interval, the representation carries beat
-    morphology and not rhythm.
+    the R peak onward, for ``WINDOW_LENGTH`` samples in total. Because the window
+    does not depend on the local RR interval, any rhythm information it carries
+    comes from neighbouring beats falling inside it rather than from the window
+    being scaled to the local rate.
+
+    Where ``WINDOW_LENGTH`` exceeds the model input length the window is
+    resampled onto it, so that every representation arm hands the network an
+    identically shaped input and a difference in results cannot be attributed to
+    the architecture seeing a different number of samples.
 
     Normalisation runs in two stages. Each beat has its own median subtracted,
     which removes the local baseline offset and so absorbs slow baseline wander
@@ -225,7 +239,7 @@ def segment_beats(
         np.empty(0, dtype=np.int64),
         np.empty(0, dtype=np.int64),
     )
-    if signal.size < BEAT_LENGTH or r_peaks.size == 0:
+    if signal.size < WINDOW_LENGTH or r_peaks.size == 0:
         return empty
 
     # Drop beats whose window would overrun either end of the record. Padding
@@ -240,6 +254,16 @@ def segment_beats(
 
     windows = windows - np.median(windows, axis=1, keepdims=True)
     windows = windows / _record_scale(signal)
+
+    if NEEDS_RESAMPLE:
+        # Polyphase rather than interpolation. Lowering the effective rate puts
+        # the Nyquist limit below components that are present in the signal, and
+        # plain interpolation would fold them back as low-frequency noise rather
+        # than removing them. resample_poly applies the anti-aliasing filter that
+        # makes the loss a clean one.
+        from scipy.signal import resample_poly
+
+        windows = resample_poly(windows, SAMPLE_LENGTH, WINDOW_LENGTH, axis=1)
 
     return (
         windows.astype(np.float32),
@@ -287,6 +311,12 @@ def build_cache(
     if cache_path.exists() and not force:
         LOGGER.info("cache already built at %s (pass --force to rebuild)", cache_path)
         return cache_path
+
+    LOGGER.info(
+        "representation=%s  window=%d (%.3f/%.3f s)  input=%d  effective_fs=%.1f Hz",
+        REPRESENTATION, WINDOW_LENGTH, PRE_SAMPLES / TARGET_FS,
+        POST_SAMPLES / TARGET_FS, BEAT_LENGTH, EFFECTIVE_FS,
+    )
 
     all_beats: list[np.ndarray] = []
     all_labels: list[np.ndarray] = []
@@ -349,7 +379,11 @@ def _write_manifest(path: Path, records: tuple[str, ...], counts: dict[str, dict
         "n_records": len(records),
         "target_fs": TARGET_FS,
         "source_fs": SOURCE_FS,
-        "beat_length": BEAT_LENGTH,
+        "representation": REPRESENTATION,
+        "window_length": WINDOW_LENGTH,
+        "model_input_length": BEAT_LENGTH,
+        "resampled": NEEDS_RESAMPLE,
+        "effective_fs": EFFECTIVE_FS,
         "pre_samples": PRE_SAMPLES,
         "post_samples": POST_SAMPLES,
         "pre_seconds": round(PRE_SAMPLES / TARGET_FS, 4),

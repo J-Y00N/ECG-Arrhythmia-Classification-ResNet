@@ -14,7 +14,17 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 from ecg_classification.augment import BeatAugmenter
-from ecg_classification.constants import CLASS_SYMBOLS, NUM_CLASSES, OBSERVATION_SYMBOL
+from ecg_classification.constants import (
+    CLASS_SYMBOLS,
+    EFFECTIVE_FS,
+    NUM_CLASSES,
+    OBSERVATION_SYMBOL,
+    POST_SAMPLES,
+    PRE_SAMPLES,
+    REPRESENTATION,
+    SAMPLE_LENGTH,
+    WINDOW_LENGTH,
+)
 from ecg_classification.data import (
     DatasetBundle,
     HeartbeatDataset,
@@ -98,7 +108,14 @@ class TrainConfig:
             rebalancing = "noreweight"
         strict = "-strict" if self.strict_disjoint else ""
         stopping = "-fullrun" if self.disable_early_stopping else ""
-        return f"{self.protocol}{strict}-{self.augmentation_mode}-{rebalancing}{stopping}-seed{self.seed}"
+        # The representation arm is read from the environment rather than passed
+        # as an argument, so it has to reach the directory name from there too:
+        # without it two arms trained on the same protocol and seed would write
+        # to the same place and the second would silently replace the first.
+        return (
+            f"{REPRESENTATION}-{self.protocol}{strict}-{self.augmentation_mode}"
+            f"-{rebalancing}{stopping}-seed{self.seed}"
+        )
 
     def resolved_output_dir(self) -> Path:
         if self.output_dir is not None:
@@ -291,6 +308,26 @@ def run_training(config: TrainConfig) -> dict[str, Any]:
         distributions,
     ) = build_dataloaders(config, device)
 
+    # The arm comes from the environment and the cache from --data-dir, so the
+    # two can disagree. build_dataset_bundle already checks the beat length, but
+    # that check passes whenever two arms happen to share an input length --
+    # narrow and wide187 both produce 187 samples from very different windows.
+    # Comparing against the manifest catches the case the shape check cannot.
+    manifest_path = Path(config.data_dir) / "cache" / "cache_manifest.json"
+    if not manifest_path.exists():
+        raise RuntimeError(f"no cache manifest at {manifest_path}; rebuild the cache")
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    cached_arm = manifest.get("representation")
+    if cached_arm != REPRESENTATION:
+        raise RuntimeError(
+            f"ECG_REPRESENTATION is {REPRESENTATION!r} but the cache at "
+            f"{config.data_dir} declares {cached_arm!r}. Point --data-dir at the "
+            f"matching cache, or rebuild it under this arm with --force.\n"
+            f"A cache built before the arms existed declares None; rebuilding it "
+            f"produces identical beats and only adds the field."
+        )
+
     # Weights are computed from the labels the network actually sees, which
     # differ from the bundle's under materialized augmentation.
     weight = (
@@ -457,6 +494,12 @@ def run_training(config: TrainConfig) -> dict[str, Any]:
     config_payload["output_dir"] = str(output_dir)
     config_payload["data_dir"] = str(config.data_dir)
     config_payload["run_name"] = config.run_name()
+    config_payload["representation"] = REPRESENTATION
+    config_payload["window_length"] = WINDOW_LENGTH
+    config_payload["model_input_length"] = SAMPLE_LENGTH
+    config_payload["effective_fs"] = EFFECTIVE_FS
+    config_payload["pre_samples"] = PRE_SAMPLES
+    config_payload["post_samples"] = POST_SAMPLES
     config_payload["device"] = str(device)
     config_payload["best_epoch"] = best_epoch
     config_payload["final_epoch"] = final_epoch
@@ -514,7 +557,7 @@ def parse_args() -> TrainConfig:
         "--output-dir",
         type=Path,
         default=None,
-        help="Defaults to outputs/<protocol>-<augmentation>-<rebalancing>-seed<n>.",
+        help="Defaults to outputs/<representation>-<protocol>-<augmentation>-<rebalancing>-seed<n>.",
     )
     parser.add_argument("--data-dir", type=Path, default=defaults.data_dir)
     parser.add_argument("--validation-size", type=float, default=defaults.validation_size)
@@ -641,6 +684,7 @@ def main() -> None:
     print(
         "Training complete | "
         f"run={config.run_name()} | "
+        f"fs={EFFECTIVE_FS:.0f}Hz | "
         f"best_epoch={result['best_epoch']} | "
         f"best_valid_macro_f1={result['best_valid_macro_f1']:.4f} | "
         f"test_accuracy={result['test_accuracy']:.4f} | "

@@ -23,7 +23,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ecg_classification.constants import PRE_SAMPLES, SAMPLE_LENGTH
+from ecg_classification.constants import R_PEAK_INDEX, SAMPLE_LENGTH
 
 
 def _resize_signal(signal: np.ndarray, target_length: int) -> np.ndarray:
@@ -43,14 +43,16 @@ def time_stretch(
     signal: np.ndarray,
     rng: np.random.Generator,
     sample_length: int = SAMPLE_LENGTH,
-    r_peak_index: int = PRE_SAMPLES,
+    r_peak_index: int = R_PEAK_INDEX,
     min_scale: float = 0.85,
     max_scale: float = 1.15,
 ) -> np.ndarray:
     """Randomly stretch or compress the signal in time, holding the R peak fixed.
 
     Every beat in this dataset is cut with its R peak at a known sample, and
-    the network sees a fixed window because of it. Naive stretching breaks that
+    the network sees a fixed window because of it. That sample is
+    ``R_PEAK_INDEX``, which accounts for any resampling between the extraction
+    window and the model input, so this holds in every representation arm. Naive stretching breaks that
     invariant: resampling to a different length moves the peak proportionally,
     so a compressed beat drifts left and a stretched beat drifts right. The
     network would then be asked to absorb a positional shift that the
@@ -146,7 +148,7 @@ class BeatAugmenter:
     """
 
     sample_length: int = SAMPLE_LENGTH
-    r_peak_index: int = PRE_SAMPLES
+    r_peak_index: int = R_PEAK_INDEX
     stretch_probability: float = 0.50
     amplitude_probability: float = 0.50
     noise_probability: float = 0.30

@@ -5,6 +5,8 @@
 data/mitbih/*.csv
 data/mitdb/
 data/cache/*.npz
+data_wide187/
+data_wide400/
 legacy/*
 notebooks/scratch_*.ipynb
 # outputs/*

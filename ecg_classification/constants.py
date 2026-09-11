@@ -12,10 +12,17 @@ preprocessed CSV release to the raw PhysioNet records, not to reproduce that
 release. The CSV's generation procedure is not documented, so reproducing it is
 not possible and imitating it would mean inheriting undocumented choices.
 
-Only the beat length of 187 samples is carried over, because the existing
-network's input layer fixes it. Everything else -- sampling rate, window
-placement, normalisation -- is specified here on physiological grounds and can
-be defended without reference to the earlier artefact.
+Only the model input length of 187 samples is carried over, so that the network
+sees an identically shaped input in every arm. Everything else -- sampling rate,
+window placement, normalisation -- is specified here on physiological grounds and
+can be defended without reference to the earlier artefact.
+
+Representation arms
+-------------------
+How much signal the window covers is a factor of the experiment, selected by the
+``ECG_REPRESENTATION`` environment variable rather than by editing this file.
+Twenty runs edited by hand is a mistake waiting to happen, and the arm is written
+into every run's configuration so that it cannot be lost after the fact.
 
 Naming
 ------
@@ -27,6 +34,8 @@ them.
 """
 
 from __future__ import annotations
+
+import os as _os
 
 # ---------------------------------------------------------------------------
 # Class labels
@@ -208,23 +217,84 @@ AAMI_SYMBOL_MAP: dict[str, str] = {
 # Target signal specification
 # ---------------------------------------------------------------------------
 #
-# Only the beat length is inherited from the previous pipeline. Every other
-# choice below is made here and justified on physiological grounds rather than
-# copied from an undocumented artefact.
+# Two lengths live here and must not be conflated.
+#
+# The *window* is how much signal is cut out of the recording, measured in
+# samples at TARGET_FS. It is a physiological choice: how much of the cardiac
+# cycle the network is allowed to see.
+#
+# The *model input* is the length the network actually receives. It is held at
+# 187 across the arms so that the architecture's relationship to its input never
+# changes, which is what lets a difference in results be attributed to the data
+# rather than to the model.
+#
+# When the two differ the window is resampled onto the input length, trading
+# temporal resolution for context. That trade is the point of the wide arms, not
+# a side effect of them.
 
-#: Resampling target, in Hz. Chosen so that BEAT_LENGTH samples span roughly
-#: one cardiac cycle: 187 / 250 = 0.748 s.
+#: Resampling target, in Hz.
 TARGET_FS = 250
 
-#: Samples taken before the R peak. 62 / 250 = 0.248 s, which comfortably
-#: contains the P wave (normally under 0.12 s) and the PR interval (0.12-0.20 s
-#: normally, longer under first-degree block).
-PRE_SAMPLES = 62
+#: Representation arms.
+#:
+#: ``narrow`` takes 0.248 s before the R peak, enough for the P wave (normally
+#: under 0.12 s) and the PR interval (0.12-0.20 s, longer under first-degree
+#: block), and 0.500 s after it, enough for the QRS complex and the T wave. It
+#: contains exactly one beat and therefore carries morphology without rhythm.
+#:
+#: ``wide187`` reaches 0.80 s either side, at which point the previous R peak is
+#: visible for 98.6% of supraventricular beats against 55.5% of normal ones --
+#: the widest separation available -- while beats two cycles back stay under 2%.
+#: Resampling 400 samples onto 187 puts the effective rate at 117 Hz, so the QRS
+#: complex falls from roughly 22 samples to 10 and components above 58.5 Hz are
+#: filtered away before they can fold back.
+#:
+#: ``wide400`` holds the same window at full rate. Its only purpose is to say
+#: whether any loss seen in ``wide187`` came from the resampling or from the
+#: wider context diluting the complex.
+_REPRESENTATIONS: dict[str, dict[str, int]] = {
+    "narrow":  {"pre": 62,  "post": 125, "input": 187},
+    "wide187": {"pre": 200, "post": 200, "input": 187},
+    "wide400": {"pre": 200, "post": 200, "input": 400},
+}
 
-#: Samples taken from the R peak onward, inclusive. 125 / 250 = 0.500 s, which
-#: contains the QRS complex (under 0.12 s normally, up to about 0.16 s for wide
-#: complexes) and the T wave at physiological rates.
-POST_SAMPLES = 125
+REPRESENTATION = _os.environ.get("ECG_REPRESENTATION", "narrow")
+if REPRESENTATION not in _REPRESENTATIONS:
+    raise ValueError(
+        f"unknown ECG_REPRESENTATION {REPRESENTATION!r}; "
+        f"expected one of {sorted(_REPRESENTATIONS)}"
+    )
+
+_arm = _REPRESENTATIONS[REPRESENTATION]
+
+#: Samples taken before and after the R peak, at TARGET_FS, before resampling.
+PRE_SAMPLES: int = _arm["pre"]
+POST_SAMPLES: int = _arm["post"]
+
+#: Length of the extracted window, before resampling.
+WINDOW_LENGTH: int = PRE_SAMPLES + POST_SAMPLES
+
+#: Model input length. Equal to WINDOW_LENGTH when no resampling is needed.
+SAMPLE_LENGTH: int = _arm["input"]
+
+#: Alias used by the raw-data pipeline. Same value, clearer name in context.
+BEAT_LENGTH = SAMPLE_LENGTH
+
+#: Whether segmentation has to resample the window onto the input length.
+NEEDS_RESAMPLE: bool = WINDOW_LENGTH != SAMPLE_LENGTH
+
+#: Where the R peak sits in the model input, after any resampling. Equal to
+#: PRE_SAMPLES when none happens. The augmenter needs it to restore alignment
+#: after a time stretch, and the EDA figures mark it.
+R_PEAK_INDEX: int = round(PRE_SAMPLES * SAMPLE_LENGTH / WINDOW_LENGTH)
+
+#: Window reach either side of the R peak, in seconds. Reported rather than
+#: computed downstream so that a run's configuration records it directly.
+PRE_SECONDS: float = round(PRE_SAMPLES / TARGET_FS, 4)
+POST_SECONDS: float = round(POST_SAMPLES / TARGET_FS, 4)
+
+#: Effective sampling rate of the model input, in Hz.
+EFFECTIVE_FS: float = round(SAMPLE_LENGTH / (WINDOW_LENGTH / TARGET_FS), 1)
 
 #: Channel to extract. Present in all 44 AAMI records.
 PREFERRED_CHANNEL = "MLII"
@@ -288,9 +358,13 @@ def _validate() -> None:
     assert AAMI_SYMBOLS[:NUM_CLASSES] == CLASS_SYMBOLS, (
         "model indices must match AAMI indices 0..3 so an existing cache stays valid"
     )
-    assert PRE_SAMPLES + POST_SAMPLES == BEAT_LENGTH == SAMPLE_LENGTH, (
-        f"window halves sum to {PRE_SAMPLES + POST_SAMPLES}, expected {SAMPLE_LENGTH}"
+    assert WINDOW_LENGTH == PRE_SAMPLES + POST_SAMPLES, "window halves disagree"
+    assert BEAT_LENGTH == SAMPLE_LENGTH, "input length aliases disagree"
+    assert 0 < R_PEAK_INDEX < SAMPLE_LENGTH, (
+        f"R peak lands at index {R_PEAK_INDEX}, outside a model input of "
+        f"{SAMPLE_LENGTH} samples"
     )
+    assert NEEDS_RESAMPLE == (WINDOW_LENGTH != SAMPLE_LENGTH), "resample flag disagrees"
 
 
 _validate()
