@@ -48,16 +48,23 @@
   "n_records": 44,
   "target_fs": 250,
   "source_fs": 360,
-  "representation": "narrow",
-  "window_length": 187,
+  "representation": "wide187_rr",
+  "window_length": 400,
   "model_input_length": 187,
-  "resampled": false,
-  "effective_fs": 250.0,
-  "pre_samples": 62,
-  "post_samples": 125,
-  "pre_seconds": 0.248,
-  "post_seconds": 0.5,
+  "resampled": true,
+  "effective_fs": 116.9,
+  "pre_samples": 200,
+  "post_samples": 200,
+  "pre_seconds": 0.8,
+  "post_seconds": 0.8,
   "normalisation": "per-beat median subtraction, per-record IQR scale",
+  "rr_features": [
+    "pre_rr_ratio",
+    "post_rr_ratio",
+    "local_rr_ratio",
+    "pre_post_ratio"
+  ],
+  "rr_local_window": 11,
   "channel": "MLII",
   "aami_symbols": [
     "N",
@@ -66,11 +73,11 @@
     "F",
     "Q"
   ],
-  "total_beats": 100694,
+  "total_beats": 100646,
   "class_totals": {
-    "N": 90088,
-    "S": 2781,
-    "V": 7008,
+    "N": 90043,
+    "S": 2780,
+    "V": 7006,
     "F": 802,
     "Q": 15
   }

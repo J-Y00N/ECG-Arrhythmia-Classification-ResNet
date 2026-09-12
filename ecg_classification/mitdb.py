@@ -34,10 +34,23 @@ Preprocessing decisions, and why
 None of these affect the comparison of interest, because the intra-patient and
 inter-patient protocols both run through this same pipeline.
 
+Layout
+------
+    data/
+    |-- mitdb/        raw WFDB records, downloaded once and shared
+    |-- narrow/       one cache directory per representation arm
+    |-- wide187/
+    |-- rr_ratio/
+    +-- ...
+
+The raw records are the same for every arm, so they live beside the caches
+rather than inside each one. The cache directory is named after the arm, which
+means the arm cannot be pointed at the wrong cache: the path is derived from it.
+
 Usage
 -----
-    python -m ecg_classification.mitdb --build-cache
-    python -m ecg_classification.mitdb --build-cache --data-dir /path/to/data
+    ECG_REPRESENTATION=narrow   python -m ecg_classification.mitdb --build-cache
+    ECG_REPRESENTATION=rr_ratio python -m ecg_classification.mitdb --build-cache
 
 This module owns the raw-to-cache layer only. Turning the cache into torch
 Datasets, applying augmentation and building samplers stays in ``data.py``.
@@ -70,7 +83,11 @@ from .constants import (
     POST_SAMPLES,
     PREFERRED_CHANNEL,
     PRE_SAMPLES,
+    N_RR_FEATURES,
     PROTOCOLS,
+    RR_CLIP,
+    RR_FEATURES,
+    RR_LOCAL_WINDOW,
     REPRESENTATION,
     SAMPLE_LENGTH,
     SOURCE_FS,
@@ -89,11 +106,23 @@ DEFAULT_DATA_DIR = PROJECT_ROOT / "data"
 # 1. Download
 # ---------------------------------------------------------------------------
 
+def cache_dir_for(data_dir: Path = DEFAULT_DATA_DIR, arm: str = REPRESENTATION) -> Path:
+    """Cache directory for a representation arm.
+
+    Derived from the arm rather than passed in, so a cache built under one arm
+    cannot be read under another. Earlier the two were independent and a
+    mismatch was possible whenever two arms shared an input length, which narrow
+    and wide187 do.
+    """
+    return Path(data_dir) / arm
+
+
 def download_mitdb(data_dir: Path = DEFAULT_DATA_DIR) -> Path:
     """Fetch the MIT-BIH Arrhythmia Database into ``data_dir/mitdb``.
 
-    Roughly 100 MB. Skipped if the directory already holds the header files for
-    every AAMI record, so this is safe to call on every run.
+    Roughly 100 MB, and shared by every arm: the records do not depend on how a
+    beat is later cut out of them. Skipped if the directory already holds the
+    header files for every AAMI record, so this is safe to call on every build.
     """
     import wfdb  # imported lazily so the module can be inspected without wfdb
 
@@ -285,7 +314,70 @@ def _record_scale(signal: np.ndarray) -> float:
 
 
 # ---------------------------------------------------------------------------
-# 5. Cache
+# 5. Interval features
+# ---------------------------------------------------------------------------
+
+def compute_rr_features(positions: np.ndarray) -> np.ndarray:
+    """Derive dimensionless interval features from R-peak positions.
+
+    Returns ``(n_beats, N_RR_FEATURES)`` in the order given by ``RR_FEATURES``.
+    ``positions`` must be the R-peak sample indices of a single record, in
+    order; intervals are meaningless across a record boundary.
+
+    These carry no class information. They come from the annotation file's
+    sample column, which the segmentation already relies on to place its
+    windows, so using them adds no dependency the pipeline did not have.
+
+    Every feature is a ratio. An interval in seconds is a statement about a
+    patient's resting rate as much as about the beat, and the first thing such a
+    feature buys a model is the ability to recognise the patient.
+
+    The first beat has no preceding interval and the last none following; both
+    are set to the record's local mean, which puts their ratios at one and makes
+    them uninformative rather than misleading.
+    """
+    n = len(positions)
+    if n == 0:
+        return np.empty((0, N_RR_FEATURES), dtype=np.float32)
+    if n < 3:
+        return np.ones((n, N_RR_FEATURES), dtype=np.float32)
+
+    intervals = np.diff(positions).astype(np.float64)
+
+    pre_rr = np.empty(n, dtype=np.float64)
+    pre_rr[1:] = intervals
+    pre_rr[0] = np.median(intervals)
+
+    post_rr = np.empty(n, dtype=np.float64)
+    post_rr[:-1] = intervals
+    post_rr[-1] = np.median(intervals)
+
+    # Centred moving mean of the preceding intervals. Uniform weights over a
+    # window that is short relative to a recording but long relative to a single
+    # ectopic beat, so the reference an ectopic beat is compared against is not
+    # itself pulled by that beat.
+    half = RR_LOCAL_WINDOW // 2
+    padded = np.pad(pre_rr, half, mode="edge")
+    kernel = np.ones(RR_LOCAL_WINDOW) / RR_LOCAL_WINDOW
+    local_mean = np.convolve(padded, kernel, mode="valid")[:n]
+
+    record_median = float(np.median(pre_rr))
+    eps = 1e-9
+
+    features = np.stack(
+        [
+            pre_rr / np.maximum(local_mean, eps),
+            post_rr / np.maximum(local_mean, eps),
+            local_mean / max(record_median, eps),
+            pre_rr / np.maximum(post_rr, eps),
+        ],
+        axis=1,
+    )
+    return np.clip(features, *RR_CLIP).astype(np.float32)
+
+
+# ---------------------------------------------------------------------------
+# 6. Cache
 # ---------------------------------------------------------------------------
 
 def build_cache(
@@ -304,7 +396,7 @@ def build_cache(
     effective-patient-count analysis.
     """
     db_dir = download_mitdb(data_dir)
-    cache_dir = data_dir / "cache"
+    cache_dir = cache_dir_for(data_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache_path = cache_dir / "beats.npz"
 
@@ -322,6 +414,7 @@ def build_cache(
     all_labels: list[np.ndarray] = []
     all_records: list[np.ndarray] = []
     all_positions: list[np.ndarray] = []
+    all_rr: list[np.ndarray] = []
     counts: dict[str, dict[str, int]] = {}
 
     for record_id in records:
@@ -332,6 +425,7 @@ def build_cache(
         all_beats.append(beats)
         all_labels.append(beat_labels)
         all_positions.append(positions)
+        all_rr.append(compute_rr_features(positions))
         all_records.append(np.full(len(beats), record_id, dtype="<U3"))
 
         per_class = {symbol: 0 for symbol in AAMI_SYMBOLS}
@@ -350,8 +444,13 @@ def build_cache(
     record_ids = np.concatenate(all_records)
     positions = np.concatenate(all_positions)
 
+    rr = np.concatenate(all_rr)
+
+    # Interval features are stored for every arm, not only the one that consumes
+    # them. They cost four floats per beat and mean that switching an arm on
+    # never requires rebuilding a cache.
     np.savez_compressed(
-        cache_path, x=x, y=y, record_id=record_ids, position=positions
+        cache_path, x=x, y=y, record_id=record_ids, position=positions, rr=rr
     )
     LOGGER.info("wrote %s  (%d beats, %.1f MB)", cache_path, len(x), cache_path.stat().st_size / 1e6)
 
@@ -389,6 +488,8 @@ def _write_manifest(path: Path, records: tuple[str, ...], counts: dict[str, dict
         "pre_seconds": round(PRE_SAMPLES / TARGET_FS, 4),
         "post_seconds": round(POST_SAMPLES / TARGET_FS, 4),
         "normalisation": "per-beat median subtraction, per-record IQR scale",
+        "rr_features": list(RR_FEATURES),
+        "rr_local_window": RR_LOCAL_WINDOW,
         "channel": PREFERRED_CHANNEL,
         "aami_symbols": list(AAMI_SYMBOLS),
         "total_beats": sum(sum(v.values()) for v in counts.values()),
@@ -401,18 +502,28 @@ def _write_manifest(path: Path, records: tuple[str, ...], counts: dict[str, dict
 
 
 def load_cache(data_dir: Path = DEFAULT_DATA_DIR) -> dict[str, np.ndarray]:
-    """Load the cached arrays. Keys: ``x``, ``y``, ``record_id``, ``position``."""
-    cache_path = data_dir / "cache" / "beats.npz"
+    """Load the cached arrays.
+
+    Always returns ``x``, ``y``, ``record_id`` and ``position``. ``rr`` is
+    returned when the cache holds it, which caches built before the interval
+    features existed do not -- they stay loadable, so earlier runs remain
+    reproducible without a rebuild.
+    """
+    cache_path = cache_dir_for(data_dir) / "beats.npz"
     if not cache_path.exists():
         raise FileNotFoundError(
-            f"no cache at {cache_path}. Run: python -m ecg_classification.mitdb --build-cache"
+            f"no cache at {cache_path}. Run:\n"
+            f"    ECG_REPRESENTATION={REPRESENTATION} python -m ecg_classification.mitdb --build-cache"
         )
     with np.load(cache_path, allow_pickle=False) as archive:
-        return {key: archive[key] for key in ("x", "y", "record_id", "position")}
+        cache = {key: archive[key] for key in ("x", "y", "record_id", "position")}
+        if "rr" in archive.files:
+            cache["rr"] = archive["rr"]
+    return cache
 
 
 # ---------------------------------------------------------------------------
-# 6. Protocol splits
+# 7. Protocol splits
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -548,7 +659,7 @@ def _stratified_beat_split(
 
 
 # ---------------------------------------------------------------------------
-# 7. CLI
+# 8. CLI
 # ---------------------------------------------------------------------------
 
 def main() -> None:

@@ -17,14 +17,19 @@ from ecg_classification.augment import BeatAugmenter
 from ecg_classification.constants import (
     CLASS_SYMBOLS,
     EFFECTIVE_FS,
+    INPUT_CHANNELS,
+    MODEL_INTERVAL_FEATURES,
     NUM_CLASSES,
     OBSERVATION_SYMBOL,
     POST_SAMPLES,
     PRE_SAMPLES,
     REPRESENTATION,
+    RR_FEATURES,
     SAMPLE_LENGTH,
+    USES_RR,
     WINDOW_LENGTH,
 )
+from ecg_classification import mitdb
 from ecg_classification.data import (
     DatasetBundle,
     HeartbeatDataset,
@@ -224,10 +229,20 @@ def build_dataloaders(
     augmenter = BeatAugmenter()
     train_features = bundle.X_train
     train_labels = bundle.y_train
+    train_intervals = bundle.i_train
 
     dataset_augmenter: BeatAugmenter | None = None
     dataset_augment_probability = 0.0
     if config.augmentation_mode == "materialized":
+        if train_intervals is not None:
+            # Materialised augmentation appends rows, and the interval table
+            # would no longer line up with them. Duplicating a beat's intervals
+            # alongside its waveform is possible but meaningless: the copy is a
+            # time-stretched beat whose real intervals differ from the original's.
+            raise NotImplementedError(
+                "materialized augmentation is not defined for arms that supply "
+                "interval features; run this arm with --augmentation-mode none"
+            )
         train_features, train_labels = materialize_augmented_dataset(
             train_features,
             train_labels,
@@ -243,19 +258,25 @@ def build_dataloaders(
     train_dataset = HeartbeatDataset(
         train_features,
         train_labels,
+        intervals=train_intervals,
         augmenter=dataset_augmenter,
         augment_labels=config.augment_labels,
         augment_probability=dataset_augment_probability,
         seed=config.seed,
     )
-    valid_dataset = HeartbeatDataset(bundle.X_valid, bundle.y_valid, seed=config.seed)
-    test_dataset = HeartbeatDataset(bundle.X_test, bundle.y_test, seed=config.seed)
+    valid_dataset = HeartbeatDataset(
+        bundle.X_valid, bundle.y_valid, intervals=bundle.i_valid, seed=config.seed
+    )
+    test_dataset = HeartbeatDataset(
+        bundle.X_test, bundle.y_test, intervals=bundle.i_test, seed=config.seed
+    )
 
     # The observation set carries no model label; zeros are placeholders and the
     # true-label column is overwritten before the table is written out.
     observe_dataset = HeartbeatDataset(
         bundle.X_observe,
         np.zeros(len(bundle.X_observe), dtype=np.int64),
+        intervals=bundle.i_observe,
         seed=config.seed,
     )
 
@@ -308,12 +329,11 @@ def run_training(config: TrainConfig) -> dict[str, Any]:
         distributions,
     ) = build_dataloaders(config, device)
 
-    # The arm comes from the environment and the cache from --data-dir, so the
-    # two can disagree. build_dataset_bundle already checks the beat length, but
-    # that check passes whenever two arms happen to share an input length --
-    # narrow and wide187 both produce 187 samples from very different windows.
-    # Comparing against the manifest catches the case the shape check cannot.
-    manifest_path = Path(config.data_dir) / "cache" / "cache_manifest.json"
+    # The cache path is derived from the arm, so a mismatch should be impossible.
+    # The manifest is checked anyway: it costs nothing and would catch a cache
+    # left behind by an earlier definition of the same arm, which a path alone
+    # cannot distinguish from a current one.
+    manifest_path = mitdb.cache_dir_for(config.data_dir) / "cache_manifest.json"
     if not manifest_path.exists():
         raise RuntimeError(f"no cache manifest at {manifest_path}; rebuild the cache")
 
@@ -346,7 +366,9 @@ def run_training(config: TrainConfig) -> dict[str, Any]:
             f"the fixed set so that seeds remain comparable."
         )
 
-    model = ResidualCNN(num_classes=NUM_CLASSES).to(device)
+    model = ResidualCNN(
+        num_classes=NUM_CLASSES, n_interval_features=MODEL_INTERVAL_FEATURES
+    ).to(device)
     criterion = torch.nn.CrossEntropyLoss(weight=weight, label_smoothing=config.label_smoothing)
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -498,6 +520,8 @@ def run_training(config: TrainConfig) -> dict[str, Any]:
     config_payload["window_length"] = WINDOW_LENGTH
     config_payload["model_input_length"] = SAMPLE_LENGTH
     config_payload["effective_fs"] = EFFECTIVE_FS
+    config_payload["input_channels"] = INPUT_CHANNELS
+    config_payload["rr_features"] = list(RR_FEATURES) if USES_RR else None
     config_payload["pre_samples"] = PRE_SAMPLES
     config_payload["post_samples"] = POST_SAMPLES
     config_payload["device"] = str(device)

@@ -1,44 +1,54 @@
 # Split Protocol and Representation in MIT-BIH Heartbeat Classification
 
-> **Draft, v0.2.0-dev.** The experimental matrix is complete; the representation
-> arm and the post-hoc uncertainty analysis are not. Sections marked *pending*
-> are placeholders. Figures are not yet regenerated and are omitted.
+> **Draft, v0.2.0-dev.** The experimental matrix is complete, including the
+> representation arms. The post-hoc uncertainty analysis is not; §6 lists what
+> remains. Figures have not been regenerated and are omitted.
 
 ## Abstract
 
 An earlier version of this project reproduced a 1D residual CNN on MIT-BIH
 heartbeat data and reported 0.9746 accuracy and 0.8763 macro F1. Those numbers
-were obtained from a widely used preprocessed CSV release which discards record
+came from a widely used preprocessed CSV release which discards record
 identifiers, and whose train and test halves stand in an exact 80:20 ratio,
 indicating a beat-level rather than a patient-level split. Patient-level
 evaluation is not merely absent from that release; it is impossible, because the
 information required to perform it has been removed from the file.
 
 This work rebuilds the pipeline from the raw PhysioNet records so that the
-recording becomes an explicit factor in the design rather than an invisible
-confounder, and measures the consequence of the split protocol while holding
-architecture, preprocessing and augmentation fixed. Under the de Chazal
-inter-patient partition the same network reaches a macro F1 of 0.450 ± 0.023
-against 0.934 ± 0.009 under a beat-level split of the same beats: a gap of 0.48.
+recording becomes an explicit factor in the design, and measures the consequence
+of the split protocol while holding architecture and preprocessing fixed. Under
+the de Chazal inter-patient partition the same network reaches a macro F1 of
+0.450 ± 0.023 against 0.934 ± 0.009 under a beat-level split of the same beats:
+a gap of 0.48.
 
 The gap is not uniform. Normal beats lose 0.03 and ventricular ectopic beats
 0.17, while supraventricular ectopic and fusion beats fall from 0.91 and 0.81 to
-exactly zero. Three findings explain the pattern. First, minority classes are
-nested inside a handful of recordings: the effective number of contributing
-records, measured by the inverse Simpson index, is 21.0 for normal beats but
-1.24 for fusion, with a single recording supplying 90% of the training half's
-fusion beats. Second, the representation chosen here — a fixed window centred on
-the R peak — excludes inter-beat timing, and supraventricular ectopy is defined
-by prematurity rather than by morphology; the previous R peak falls inside the
-window for 0.001% of beats. Third, and consequently, supraventricular beats are
-identifiable only through patient-specific morphology, which a beat-level split
-makes available and a patient-level split removes.
+exactly zero. Minority classes are nested inside a handful of recordings -- the
+effective number of contributing records, by inverse Simpson index, is 21.0 for
+normal beats and 1.24 for fusion, with one recording supplying 90% of the
+training half's fusion beats. And the representation excludes inter-beat timing,
+which is what defines supraventricular ectopy: the previous R peak falls inside
+the analysis window for 0.001% of beats.
 
-Four standard procedures are shown to fail under this structure: inverse-frequency
-class weighting collapses training entirely, model selection cannot be performed
-on the fusion class, post-hoc prior correction cannot recover the gain obtained
-by oversampling, and the choice of window silently deletes a class. A single
-principle organises the failures: quantities measured on an absolute scale are
+Four representation arms were then run as a factorial design, crossing window
+context against explicit normalised interval features. Widening the window
+recovers ventricular beats (0.81 to 0.89) and moves supraventricular beats off
+zero (0.00 to 0.09); interval features move them further (0.22) at the cost of
+ventricular ones (0.71). Combining both yields no more than the window alone,
+an interaction of −0.026. Across every arm the sum of the two ectopic F1 scores
+stays between 0.81 and 0.99: each configuration buys one class at the other's
+expense. Prematurity is a property the two ectopic classes share, at normalised
+ratios of 0.763 and 0.733, so a network handed timing learns that a beat is
+ectopic without learning which kind, and assigns it to whichever is four times
+more common in training.
+
+Six standard procedures are shown to fail under this structure: inverse-frequency
+class weighting collapses training outright, model selection cannot be performed
+on the fusion class, post-hoc prior correction cannot recover what oversampling
+achieves, oversampling itself does not improve on an unweighted loss but
+multiplies seed variance sevenfold, the choice of window silently deletes a
+class, and combining two corrections that each work alone overshoots. A single
+principle organises them: quantities measured on an absolute scale are
 patient-dependent, and only ratios are portable across patients.
 
 **Keywords:** ECG classification, MIT-BIH, inter-patient evaluation, class-patient
@@ -85,9 +95,12 @@ them. It is recorded in Appendix A as motivation, not as a comparison arm.
   of every beat, reproducing published DS1/DS2 class counts to within two beats.
 - A controlled measurement of the intra- versus inter-patient gap, decomposed by
   class, with the decomposition explained by two independent mechanisms.
+- A factorial design over representation, separating window context from explicit
+  normalised timing, and showing the two to be redundant rather than
+  complementary.
 - A quantification of class-patient nesting, and a demonstration that it
-  invalidates four standard procedures.
-- One hypothesis stated in advance, tested, and refuted.
+  invalidates six standard procedures.
+- Two hypotheses stated in advance, tested, and refuted.
 
 ---
 
@@ -214,7 +227,43 @@ Validation is split at the record level under `inter` because holding out beats
 from recordings the model also trains on would reintroduce, at the point of model
 selection, exactly the leakage the protocol exists to remove.
 
-### 3.2 Model
+### 3.2 Representation arms
+
+How much signal the window covers, and whether interval features accompany it,
+is a factor of the experiment rather than a fixed choice. The arm is selected by
+an environment variable, the cache directory is derived from it, and the run
+directory is named after it, so an arm cannot be pointed at the wrong cache and
+two arms cannot overwrite each other's results.
+
+| Arm | Window | Model input | Effective rate | Intervals |
+|---|---|---:|---:|:---:|
+| `narrow` | 0.248 s before, 0.500 s after | 187 | 250 Hz | no |
+| `wide187` | 0.80 s either side | 187 | 117 Hz | no |
+| `wide400` | 0.80 s either side | 400 | 250 Hz | no |
+| `rr_ratio` | as `narrow` | 187 | 250 Hz | **yes** |
+| `wide187_rr` | as `wide187` | 187 | 117 Hz | **yes** |
+
+The model input is held at 187 across the arms so that the network sees an
+identically shaped input regardless of how much signal the window covers; where
+the two differ the window is resampled onto it with a polyphase filter, trading
+temporal resolution for context. At 0.80 s of reach the previous R peak becomes
+visible for 98.6% of supraventricular beats against 55.5% of normal ones, the
+widest separation available, while beats two cycles back stay under 2%.
+
+Interval features join at the classifier rather than at the stem, so the
+convolutional trunk is identical in every arm and only the classifier's input
+width changes. Four features are supplied, all of them dimensionless:
+
+| Feature | Definition |
+|---|---|
+| `pre_rr_ratio` | preceding interval over the local mean -- prematurity |
+| `post_rr_ratio` | following interval over the local mean -- the compensatory pause |
+| `local_rr_ratio` | local mean over the record median -- rate drift |
+| `pre_post_ratio` | preceding over following interval |
+
+Absolute intervals are deliberately excluded; §4.6 shows why.
+
+### 3.3 Model
 
 The architecture is unchanged from the version used with the CSV pipeline: a 1D
 residual CNN with a convolutional stem, residual blocks, global average pooling
@@ -222,7 +271,7 @@ and a two-layer classifier head. No layer, kernel size or channel count was
 modified. Every difference in results is therefore attributable to the data and
 the protocol.
 
-### 3.3 Augmentation
+### 3.4 Augmentation
 
 The reference paper does not describe an augmentation procedure, so the
 augmentation here is of our own design and is not a reproduction of prior work.
@@ -254,7 +303,7 @@ cannot be specified independently of the representation it acts on.** Where the
 provenance of a representation is undocumented, the augmentation built on it is
 not reproducible either.
 
-### 3.4 Rebalancing
+### 3.5 Rebalancing
 
 Two mechanisms are compared.
 
@@ -291,7 +340,7 @@ statistics the batch-normalisation layers learn; and Adam partially absorbs a
 large loss coefficient through its per-parameter normalisation while it does not
 absorb repeated gradient steps.
 
-### 3.5 Model selection
+### 3.6 Model selection
 
 Selection is fixed to N, S and V. Fusion cannot support it: a validation split
 either takes record 208 — leaving training with about forty fusion beats — or it
@@ -304,13 +353,16 @@ seeds were selecting their models against different objectives and averaging
 across them meant nothing. Selection is restricted; **reporting is not** — test
 metrics cover all four classes.
 
-### 3.6 Experimental matrix
+### 3.7 Experimental matrix
 
-Eighteen runs: 3 augmentation modes × 2 protocols × 3 seeds, with β = 0, a
-100-epoch budget and early stopping at patience 15. Two comparison runs add the
-oversampler and the strict subject-disjoint sensitivity check. Every run records
-whether it stopped by early stopping or by the epoch limit; all eighteen stopped
-early, so the budget never bound.
+The `narrow` arm carries the full matrix: 3 augmentation modes × 2 protocols ×
+3 seeds, with β = 0, a 100-epoch budget and early stopping at patience 15. The
+`wide187` arm adds 2 protocols × 3 seeds, and the oversampler 3 further seeds
+under `inter`. The remaining arms and the learning-rate sweep are single-seed
+probes, and are reported as such.
+
+Every run records whether it stopped by early stopping or by the epoch limit.
+None stopped by the limit, so the budget never bound.
 
 ---
 
@@ -320,18 +372,27 @@ early, so the budget never bound.
 
 Test macro F1 at the best validation checkpoint, mean ± sd over three seeds:
 
-| Augmentation | intra | inter | **Gap** |
-|---|---:|---:|---:|
-| `none` | 0.934 ± 0.009 | 0.450 ± 0.023 | **0.485** |
-| `on_the_fly` | 0.937 ± 0.012 | 0.450 ± 0.026 | **0.487** |
-| `materialized` | 0.940 ± 0.012 | 0.475 ± 0.037 | **0.465** |
+| Arm | Augmentation | intra | inter | **Gap** |
+|---|---|---:|---:|---:|
+| `narrow` | `none` | 0.934 ± 0.009 | 0.450 ± 0.023 | **0.485** |
+| `narrow` | `on_the_fly` | 0.937 ± 0.012 | 0.450 ± 0.026 | **0.487** |
+| `narrow` | `materialized` | 0.940 ± 0.012 | 0.475 ± 0.037 | **0.465** |
+| `wide187` | `none` | 0.953 ± 0.003 | 0.491 ± 0.003 | **0.462** |
 
 Identical model, identical preprocessing, identical augmentation. Changing only
 how beats are assigned to the two halves costs roughly half the reported macro F1.
 
-Seed-to-seed variance is about 2.5 times larger under `inter`. Which recordings
-land in validation determines how many minority-class beats remain for training,
-and because those beats sit in a few recordings the effect is amplified.
+Seed-to-seed variance is about 2.5 times larger under `inter` in the `narrow`
+arm. Which recordings land in validation determines how many minority-class
+beats remain for training, and because those beats sit in a few recordings the
+effect is amplified.
+
+The wider window nearly removes that instability: the inter-patient standard
+deviation falls from 0.023 to 0.003, with the three seeds landing at 0.488,
+0.492 and 0.493. Under `narrow` there was little generalisable signal, so which
+recordings happened to be held out dominated the outcome; under `wide187` every
+seed finds the same thing. The stability is the stronger evidence of the two --
+more so than the 0.04 rise in the mean.
 
 ### 4.2 Per-class decomposition
 
@@ -380,7 +441,117 @@ This is the memorisation mechanism visible in the optimisation trace. Continuing
 to fit the training recordings is *rewarded* when those recordings also furnish
 the test beats, and *paid for* when they do not.
 
-### 4.4 Rebalancing strength
+### 4.4 Representation
+
+Every arm was run under both protocols; the table below is seed 42 under
+`inter`, where the arms differ. The three-class average over N, S and V is the
+interpretive endpoint, for the reason given in §3.6.
+
+| Arm | N | **S** | **V** | F | macro (4) | **macro (N/S/V)** |
+|---|---:|---:|---:|---:|---:|---:|
+| `narrow` | 0.964 | **0.000** | 0.813 | 0.000 | 0.444 | 0.592 |
+| `wide187` | 0.967 | **0.090** | **0.895** | 0.000 | 0.488 | **0.650** |
+| `rr_ratio` | 0.963 | **0.217** | 0.708 | 0.000 | 0.472 | 0.629 |
+| `wide187_rr` | 0.970 | 0.064 | **0.924** | 0.000 | 0.489 | **0.652** |
+
+Reported the way this literature reports, by sensitivity and positive
+predictivity on the two ectopic classes:
+
+| Arm | S Se | S +P | V Se | V +P |
+|---|---:|---:|---:|---:|
+| `narrow` | 0.000 | 0.000 | 0.750 | 0.888 |
+| `wide187` | 0.074 | 0.115 | 0.945 | 0.849 |
+| `rr_ratio` | **0.150** | **0.396** | 0.899 | 0.584 |
+| `wide187_rr` | 0.040 | 0.156 | **0.964** | **0.887** |
+
+Ventricular performance is close to published inter-patient work throughout. The
+shortfall is supraventricular, and it is the subject of the rest of this section.
+
+### 4.5 The representation grid
+
+Crossing window context against explicit intervals gives a 2×2, in macro F1 over
+four classes:
+
+| | no intervals | with intervals |
+|---|---:|---:|
+| **narrow window** | 0.444 | 0.472 |
+| **wide window** | 0.488 | 0.489 |
+
+Taking `narrow` as the baseline,
+
+$$
+\begin{aligned}
+\text{intervals alone} &= +0.0277 \\
+\text{wider window alone} &= +0.0435 \\
+\text{both} &= +0.0450 \\
+\text{interaction} &= 0.0450 - 0.0277 - 0.0435 = \mathbf{-0.0262}
+\end{aligned}
+$$
+
+**The interaction is negative: the two sources of timing are redundant, not
+complementary.** Adding interval features to the wider window buys 0.0015 over
+the window alone.
+
+The per-class view shows this is not a plateau but a substitution. Summing the
+two ectopic F1 scores:
+
+| Arm | S | V | **S + V** |
+|---|---:|---:|---:|
+| `narrow` | 0.000 | 0.813 | 0.813 |
+| `wide187` | 0.090 | 0.895 | 0.985 |
+| `rr_ratio` | 0.217 | 0.708 | 0.925 |
+| `wide187_rr` | 0.064 | 0.924 | 0.988 |
+
+**No configuration holds both.** The sum stays between 0.81 and 0.99 while the
+split between the two classes moves freely. The confusion matrices locate the
+exchange: under `rr_ratio` the count of supraventricular beats called
+ventricular rises from 354 to 720, and normal beats called ventricular from 154
+to 1,327.
+
+The mechanism is in the interval features themselves (§4.6): prematurity is
+almost identical for the two ectopic classes, at 0.763 and 0.733 of the local
+mean. Timing tells the network that a beat is ectopic. It does not tell it which
+kind, and the network resolves the ambiguity toward the class that is four times
+more frequent in training.
+
+### 4.6 Interval features and the absolute-scale illusion
+
+Mean feature values by class, over the whole database:
+
+| | `pre_rr_ratio` | `post_rr_ratio` | `local_rr_ratio` | `pre_post_ratio` |
+|---|---:|---:|---:|---:|
+| N | 1.028 | 0.983 | 1.006 | 1.068 |
+| **S** | **0.763** | 1.044 | 1.120 | 0.821 |
+| **V** | **0.733** | **1.202** | 1.024 | 0.653 |
+| **F** | **0.983** | 0.906 | 1.020 | 1.113 |
+
+Three things follow.
+
+**The features recover a textbook distinction.** Ventricular ectopic beats carry
+a markedly longer following interval than supraventricular ones (1.202 against
+1.044). A ventricular beat does not reset the sinus node and is followed by a
+full compensatory pause; a supraventricular beat does reset it and is followed
+by an incomplete one. That the separation appears unprompted is evidence the
+features measure what they are meant to.
+
+**Prematurity does not separate the ectopic classes.** At 0.763 and 0.733 the two
+are nearly identical, which is why §4.5 finds a substitution rather than a gain.
+
+**Fusion beats are not premature.** On an absolute scale they appear to be -- a
+median preceding interval of 0.564 s against 0.768 s for normal beats -- but
+normalised they sit at 0.983, on top of the normal distribution. Records 208 and
+213 supply almost all of them, and those recordings run at 103 and 108 beats per
+minute against 75 and 69 for typical records. The fusion beats are not early;
+the patients who have them are fast.
+
+A model given absolute timing would therefore learn to detect fusion as *a
+patient whose heart rate is high*. That is patient recognition, and it would
+transfer from DS1 to DS2 here only because records 208 and 213 happen to share
+the trait. The `wide187` arm, which carries absolute timing implicitly, never
+predicted fusion at all -- which is the correct behaviour and confirms the
+prediction made before the run.
+
+### 4.7 Rebalancing strength
 
 Loss weighting was swept over β (inter, seed 42):
 
@@ -403,11 +574,10 @@ No degree of rebalancing improves on β = 0. **How much rebalancing a dataset
 tolerates is itself a measurement of how deeply its classes are nested inside
 individual recordings**, and is reported here as a result rather than tuned away.
 
-Oversampling behaves differently. A single run (inter, seed 42) reaches 0.521
-against 0.444 for the unweighted loss, with supraventricular recall rising from
-0.00 to 0.67 while normal recall falls from 0.99 to 0.83.
+Oversampling is treated separately in §4.8, where a single-seed result that
+appeared to beat the unweighted loss did not survive two more seeds.
 
-### 4.5 A refuted hypothesis: post-hoc prior correction
+### 4.8 Two refuted hypotheses
 
 Because the tilt introduced by rebalancing is a known quantity, it can be undone
 at prediction time without retraining:
@@ -442,7 +612,7 @@ recovers a separation that is not present. Oversampling must therefore have
 changed the ranking itself — consistent with the batch-composition and
 gradient-step arguments of §3.4 rather than with a threshold effect.
 
-### 4.6 Timing information audit
+### 4.9 Timing information audit
 
 Pre-RR intervals were computed from the stored R-peak positions, which are part
 of the cache and carry no class information.
@@ -500,7 +670,36 @@ This is why de Chazal separated the two: morphology from an absolute window,
 timing from separately normalised interval features. The present work arrived at
 the same conclusion independently, by a different route.
 
-### 4.7 Sensitivity: records 201 and 202
+### 4.10 Learning rate
+
+The inter-patient runs reach their best validation epoch early -- a mean of 8.9
+against 36.7 for intra-patient -- which invites the objection that the runs are
+simply undertrained. Three learning rates were tried on `wide187`, seed 42:
+
+| Learning rate | Best epoch | **Train accuracy at that epoch** | macro (N/S/V) |
+|---:|---:|---:|---:|
+| 3e-4 | 21 | **0.9951** | 0.660 |
+| 1e-3 | 16 | **0.9960** | 0.650 |
+| 3e-3 | 11 | **0.9944** | 0.673 |
+
+Training accuracy stands above 99.4% at the validation peak under every setting,
+so the network is not short of fitting; and the peak moves by a factor of two
+across the sweep while the score moves by 0.023. The learning rate changes the
+trajectory and not the destination.
+
+The early peak is therefore not an optimisation artefact. It is the point at
+which the generalisable signal in the training recordings runs out, after which
+what the network continues to learn is specific to the patients it trained on.
+The same reading is supported by the arms: the best epoch under `inter` rises
+from 1 to 16 when the window widens, because widening it gives the network more
+that transfers.
+
+Worth noting against ourselves: 3e-3 scores highest here, so the default of 1e-3
+is not demonstrably optimal. With one seed and a spread of 0.023 against a
+seed-level standard deviation of 0.004 in this arm, the ordering is suggestive
+rather than established.
+
+### 4.11 Sensitivity: records 201 and 202
 
 Records 201 and 202 come from the same male subject, and the de Chazal partition
 places 201 in DS1 and 202 in DS2. The published inter-patient split is therefore
@@ -511,7 +710,7 @@ not strictly subject-disjoint. Excluding record 202 changes test macro F1 from
 
 ## 5. Discussion
 
-### 5.1 Four failures of standard procedure
+### 5.1 Six failures of standard procedure
 
 | # | Procedure | Failure |
 |---|---|---|
@@ -545,12 +744,25 @@ replicates a patient. Rebalancing a loss reweights a patient. `N_eff` is the
 quantity that makes the coupling explicit, and it is what explains why the class
 ordering of the protocol gap is not the class ordering of the frequencies.
 
+The oversampling result in §4.8 is the sharpest illustration. Replicating fusion
+beats replicates record 208, so a run's outcome comes to depend on whether that
+recording survived the validation split -- which is exactly the seven-fold rise
+in variance that appeared once two more seeds were run. The procedure did not
+add patient diversity. It amplified the dependence on the diversity already
+present.
+
 ### 5.4 Limitations
 
-- **Timing is excluded from the representation.** Supraventricular performance is
-  therefore not comparable with the inter-patient literature, which uses RR
-  interval features throughout. This is a stated design condition, not an
-  oversight, but it does bound what the absolute figures mean.
+- **Supraventricular performance is below published inter-patient work**, at a
+  best F1 of 0.22 against a literature range of roughly 0.39 to 0.69. Three
+  design choices account for it, all of them deliberate. The morphology
+  representation is a single lead with no explicit features -- no QRS duration,
+  no P-wave shape -- and no band-pass filtering, so the low-amplitude P wave that
+  distinguishes an atrial ectopic beat is present in the window but weak.
+  Interval features come from one local window, where the literature uses several
+  scales including a five-minute average. And no rebalancing is applied, because
+  none improved the aggregate. What this study measures is the effect of the
+  split protocol, and that effect is consistent across every representation arm.
 - **Expert R-peak annotations are assumed.** Substituting an automatic detector
   would introduce localisation error that this work does not model.
 - **Subject, session and electrode placement are perfectly confounded.** The
@@ -559,6 +771,13 @@ ordering of the protocol gap is not the class ordering of the frequencies.
 - **Augmentation confounds two effects in the `materialized` mode.** Its
   class-dependent multipliers change the prior as well as injecting invariance;
   the two are separable only by a factorial design not run here.
+- **Three of the five representation arms are single-seed.** The grid and the
+  interaction estimate rest on one seed each for `rr_ratio` and `wide187_rr`. A
+  seed-level standard deviation of 0.004 in the `wide187` arm suggests the
+  ordering is stable, but the oversampling result in §4.8 is a reminder of what
+  a single seed can hide.
+- **The learning rate is not demonstrably optimal.** 3e-3 scored above the 1e-3
+  default in a single-seed sweep.
 - **Fusion figures are unstable at any protocol.** A patient-level sample size of
   one does not support a class-wise estimate.
 - **The 15 unclassifiable beats are observed, not scored.**
@@ -566,6 +785,10 @@ ordering of the protocol gap is not the class ordering of the frequencies.
 ---
 
 ## 6. Pending work
+
+The experimental matrix is complete. What remains is the post-hoc analysis,
+which requires no further training: every figure below is computed from the
+prediction tables already written.
 
 **Uncertainty quantification.** Beats are clustered within recordings, so a
 beat-level bootstrap treats roughly fifty thousand correlated observations as
@@ -610,9 +833,9 @@ protocols, and the behaviour of the trained model on the 15 artefact beats. A
 classifier that is confidently wrong on a detached-electrode waveform is a
 clinically worse failure than one that is uncertain.
 
-**Representation as a second factor.** The narrow window (morphology only)
-against a normalised RR-ratio feature set, testing whether the gap shrinks by the
-amount attributable to the representation rather than to memorisation.
+**Uncertainty on the arm comparison.** The representation grid is reported as
+point estimates. The cluster bootstrap will say which of its differences survive,
+and the single-seed arms need either more seeds or an explicit interval.
 
 ## 7. Future work
 

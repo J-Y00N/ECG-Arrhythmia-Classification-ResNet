@@ -2,11 +2,8 @@
 *.egg-info/
 *.DS_Store
 .ipynb_checkpoints/
-data/mitbih/*.csv
 data/mitdb/
-data/cache/*.npz
-data_wide187/
-data_wide400/
+data/*/*.npz
 legacy/*
 notebooks/scratch_*.ipynb
 # outputs/*

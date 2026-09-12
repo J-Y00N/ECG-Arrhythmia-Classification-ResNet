@@ -252,10 +252,23 @@ TARGET_FS = 250
 #: ``wide400`` holds the same window at full rate. Its only purpose is to say
 #: whether any loss seen in ``wide187`` came from the resampling or from the
 #: wider context diluting the complex.
-_REPRESENTATIONS: dict[str, dict[str, int]] = {
-    "narrow":  {"pre": 62,  "post": 125, "input": 187},
-    "wide187": {"pre": 200, "post": 200, "input": 187},
-    "wide400": {"pre": 200, "post": 200, "input": 400},
+#: ``rr_ratio`` keeps the narrow morphology window and supplies timing as
+#: separate channels instead, every one of them a ratio. Comparing it against
+#: ``narrow`` isolates the contribution of timing, and against ``wide187`` the
+#: contribution of normalising that timing rather than leaving it absolute --
+#: which matters because an absolute interval is a statement about a patient's
+#: resting rate and a ratio is a statement about the beat.
+
+#: ``wide187_rr`` holds both at once. The other two arms each recover one class
+#: at the other's expense -- wide187 favours ventricular beats, rr_ratio
+#: supraventricular ones -- so whether the window and the interval features are
+#: complementary or redundant is a question the pair cannot answer alone.
+_REPRESENTATIONS: dict[str, dict] = {
+    "narrow":   {"pre": 62,  "post": 125, "input": 187, "rr": False},
+    "wide187":  {"pre": 200, "post": 200, "input": 187, "rr": False},
+    "wide400":  {"pre": 200, "post": 200, "input": 400, "rr": False},
+    "rr_ratio": {"pre": 62,  "post": 125, "input": 187, "rr": True},
+    "wide187_rr":  {"pre": 200, "post": 200, "input": 187, "rr": True}, 
 }
 
 REPRESENTATION = _os.environ.get("ECG_REPRESENTATION", "narrow")
@@ -295,6 +308,51 @@ POST_SECONDS: float = round(POST_SAMPLES / TARGET_FS, 4)
 
 #: Effective sampling rate of the model input, in Hz.
 EFFECTIVE_FS: float = round(SAMPLE_LENGTH / (WINDOW_LENGTH / TARGET_FS), 1)
+
+# ---------------------------------------------------------------------------
+# Interval features
+# ---------------------------------------------------------------------------
+#
+# Every feature below is dimensionless. Absolute intervals are deliberately
+# excluded: pre-RR in seconds separates the classes on paper, but the separation
+# is confounded with resting heart rate. Fusion beats are the clearest case --
+# their median pre-RR of 0.564 s looks premature against 0.768 s for normal
+# beats, but almost all of them come from records 208 and 213, which beat at 103
+# and 108 per minute. Normalised by each record's own rate they sit at 1.0. A
+# model given the absolute interval would learn to detect fusion as "a patient
+# whose heart rate is high", which is patient recognition rather than arrhythmia
+# recognition.
+
+#: Interval features supplied to the ``rr_ratio`` arm, in channel order.
+RR_FEATURES: tuple[str, ...] = (
+    "pre_rr_ratio",    # pre-RR over the local mean: prematurity
+    "post_rr_ratio",   # post-RR over the local mean: the compensatory pause
+    "local_rr_ratio",  # local mean over the record median: local rate drift
+    "pre_post_ratio",  # pre-RR over post-RR: scale-free on its own
+)
+
+N_RR_FEATURES = len(RR_FEATURES)
+
+#: Whether this arm supplies interval features.
+USES_RR: bool = bool(_arm["rr"])
+
+#: Interval features the model joins at its classifier. Zero in every arm that
+#: does not use them, which keeps the network identical to its earlier form.
+MODEL_INTERVAL_FEATURES: int = N_RR_FEATURES if USES_RR else 0
+
+#: Channels the dataset emits: the waveform, plus one constant plane per
+#: interval feature. The model takes the planes apart again on the way in.
+INPUT_CHANNELS: int = 1 + MODEL_INTERVAL_FEATURES
+
+#: Beats either side used for the local mean RR. Eleven covers roughly eight
+#: seconds at a normal rate: long enough for one ectopic beat not to move the
+#: reference it is being compared against, short enough to track rate drift.
+RR_LOCAL_WINDOW = 11
+
+#: Ratios are bounded before use. A dropped annotation doubles an interval and
+#: a spurious one halves it; neither should be allowed to dominate the input
+#: scale, and nothing physiological lies outside this range.
+RR_CLIP = (0.0, 5.0)
 
 #: Channel to extract. Present in all 44 AAMI records.
 PREFERRED_CHANNEL = "MLII"
@@ -365,6 +423,9 @@ def _validate() -> None:
         f"{SAMPLE_LENGTH} samples"
     )
     assert NEEDS_RESAMPLE == (WINDOW_LENGTH != SAMPLE_LENGTH), "resample flag disagrees"
+    assert INPUT_CHANNELS == 1 + MODEL_INTERVAL_FEATURES, "channel count disagrees"
+    assert len(set(RR_FEATURES)) == N_RR_FEATURES, "duplicate interval feature"
+    assert RR_CLIP[0] < RR_CLIP[1], "interval clip bounds are inverted"
 
 
 _validate()

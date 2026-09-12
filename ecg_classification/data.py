@@ -10,7 +10,13 @@ from torch.utils.data import Dataset, WeightedRandomSampler, get_worker_info
 
 from ecg_classification import mitdb
 from ecg_classification.augment import BeatAugmenter
-from ecg_classification.constants import NUM_CLASSES, OBSERVATION_LABEL, SAMPLE_LENGTH
+from ecg_classification.constants import (
+    NUM_CLASSES,
+    N_RR_FEATURES,
+    OBSERVATION_LABEL,
+    SAMPLE_LENGTH,
+    USES_RR,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATA_DIR = PROJECT_ROOT / "data"
@@ -26,6 +32,11 @@ class DatasetBundle:
     patient count all need to know which recording a beat came from, and the
     previous CSV source discarded that information.
 
+    The ``i_*`` arrays hold the interval features, or None in arms that do not
+    use them. They are kept beside the waveforms rather than stacked into them
+    because four floats per beat costs nothing while four constant planes per
+    beat would cost three hundred megabytes.
+
     Beats carrying the observation label are held out of all three splits and
     returned separately in ``X_observe``. They are never trained on, never
     validated on and never scored; they exist so that the behaviour of a
@@ -36,19 +47,39 @@ class DatasetBundle:
     X_train: np.ndarray
     y_train: np.ndarray
     r_train: np.ndarray
+    i_train: np.ndarray | None
     X_valid: np.ndarray
     y_valid: np.ndarray
     r_valid: np.ndarray
+    i_valid: np.ndarray | None
     X_test: np.ndarray
     y_test: np.ndarray
     r_test: np.ndarray
+    i_test: np.ndarray | None
     X_observe: np.ndarray
     r_observe: np.ndarray
+    i_observe: np.ndarray | None
     split: mitdb.Split
 
 
-def _validate_arrays(features: np.ndarray, labels: np.ndarray) -> None:
+def _validate_arrays(
+    features: np.ndarray, labels: np.ndarray, intervals: np.ndarray | None
+) -> None:
     """Guard the assumptions the model and augmenter rely on."""
+    if USES_RR:
+        if intervals is None:
+            raise ValueError(
+                "this representation needs interval features, but the cache holds "
+                "none. Rebuild it: the features are derived from the R-peak "
+                "positions already stored there."
+            )
+        if intervals.shape[1] != N_RR_FEATURES:
+            raise ValueError(
+                f"expected {N_RR_FEATURES} interval features, got {intervals.shape[1]}"
+            )
+        if len(intervals) != len(features):
+            raise ValueError("interval features and waveforms disagree in length")
+
     if features.shape[1] != SAMPLE_LENGTH:
         raise ValueError(
             f"Expected {SAMPLE_LENGTH} samples per beat, got {features.shape[1]}."
@@ -84,6 +115,7 @@ def build_dataset_bundle(
 
     cache = mitdb.load_cache(data_dir)
     features, labels, record_ids = cache["x"], cache["y"], cache["record_id"]
+    intervals = cache.get("rr") if USES_RR else None
 
     # Split the observation class off before anything else. It is filtered here
     # rather than at cache-build time so the cache stays a faithful record of
@@ -93,9 +125,12 @@ def build_dataset_bundle(
     modelled = ~observed
     X_observe = features[observed].astype(np.float32, copy=False)
     r_observe = record_ids[observed]
+    i_observe = intervals[observed].astype(np.float32, copy=False) if intervals is not None else None
 
     features, labels, record_ids = features[modelled], labels[modelled], record_ids[modelled]
-    _validate_arrays(features, labels)
+    if intervals is not None:
+        intervals = intervals[modelled]
+    _validate_arrays(features, labels, intervals)
 
     split = mitdb.make_split(
         record_ids=record_ids,
@@ -106,11 +141,12 @@ def build_dataset_bundle(
         strict_disjoint=strict_disjoint,
     )
 
-    def take(index: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def take(index: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
         return (
             features[index].astype(np.float32, copy=False),
             labels[index].astype(np.int64, copy=False),
             record_ids[index],
+            intervals[index].astype(np.float32, copy=False) if intervals is not None else None,
         )
 
     return DatasetBundle(
@@ -119,6 +155,7 @@ def build_dataset_bundle(
         *take(split.test_index),
         X_observe=X_observe,
         r_observe=r_observe,
+        i_observe=i_observe,
         split=split,
     )
 
@@ -272,12 +309,25 @@ class HeartbeatDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
     travel next to the dataset in :class:`DatasetBundle` rather than through
     the batch, so the training loop needs no change and evaluation can align
     identifiers positionally against an unshuffled loader.
+
+    When interval features are supplied each is broadcast to a constant plane
+    and stacked behind the waveform, giving the network ``INPUT_CHANNELS``
+    channels of equal length. Constant planes waste arithmetic, but they leave
+    the training loop, the metrics and the prediction table untouched, and the
+    alternative -- a second input argument -- would change every call site for a
+    feature that is off in three of the four arms.
+
+    Augmentation applies to the waveform only. Stretching a beat in time would
+    change its apparent rate without changing the interval features that
+    describe it, so the two are inconsistent by construction and the arms that
+    use intervals are run without augmentation.
     """
 
     def __init__(
         self,
         features: np.ndarray,
         labels: np.ndarray,
+        intervals: np.ndarray | None = None,
         augmenter: BeatAugmenter | None = None,
         augment_labels: Iterable[int] | None = None,
         augment_probability: float = 0.0,
@@ -285,6 +335,9 @@ class HeartbeatDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
     ) -> None:
         self.features = np.asarray(features, dtype=np.float32)
         self.labels = np.asarray(labels, dtype=np.int64)
+        self.intervals = None if intervals is None else np.asarray(intervals, dtype=np.float32)
+        if self.intervals is not None and len(self.intervals) != len(self.features):
+            raise ValueError("interval features and waveforms disagree in length")
         if len(self.features) != len(self.labels):
             raise ValueError(
                 f"features and labels must have the same length, got {len(self.features)} and {len(self.labels)}."
@@ -327,7 +380,14 @@ class HeartbeatDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
             signal = self.augmenter(signal, rng)
 
         signal = np.expand_dims(signal, axis=0).astype(np.float32, copy=False)
+
+        if self.intervals is not None:
+            planes = np.repeat(
+                self.intervals[index][:, None], signal.shape[1], axis=1
+            ).astype(np.float32)
+            signal = np.concatenate([signal, planes], axis=0)
+
         return (
-            torch.from_numpy(signal),
+            torch.from_numpy(np.ascontiguousarray(signal)),
             torch.tensor(label, dtype=torch.long),
         )
