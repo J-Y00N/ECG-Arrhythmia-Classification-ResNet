@@ -1,0 +1,9 @@
+{
+  "run_name": "narrow-inter-1nn",
+  "representation": "narrow",
+  "protocol": "inter",
+  "model": "1nn",
+  "accuracy": 0.8760994263862333,
+  "macro_f1": 0.3919103167566659,
+  "macro_f1_nsv": 0.521932649684771
+}
