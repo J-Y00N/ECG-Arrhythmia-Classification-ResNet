@@ -39,7 +39,10 @@ aggregate calibration hides where the model fails: an expected calibration error
 of 0.024 overall against 0.725 on the single recording the model handles worst,
 where it claims 0.949 confidence at 0.224 accuracy.
 
-Consequently no intervention could be shown to help. Five rebalancing
+What this establishes is a property of the protocols rather than of the models:
+a beat-level figure answers a question about adaptation while being reported as
+though it answered one about generalisation. Consequently no intervention could
+be shown to help. Five rebalancing
 strengths, an oversampler, four representation arms and three learning rates
 were compared; every difference fell inside the record-level interval. Two
 hypotheses stated in advance -- that post-hoc prior correction would recover
@@ -184,11 +187,11 @@ support.
 | Normalisation | Per-beat median subtraction, then division by the record's interquartile range | The first absorbs baseline wander without a filter; the second removes between-record gain differences while preserving amplitude contrast within a record |
 | Boundary beats | Dropped, not zero-padded | Padding would hand the network a flat segment that means nothing |
 
-One point should be made explicitly, because the limitations in §5.7 are easy to
+One point should be made explicitly, because the limitations in §5.8 are easy to
 misread without it. A single-lead recording is one potential against time. No
 step of this pipeline discards spatial or inter-lead phase information: such
 information does not exist in the source and would require a multi-lead
-recording to obtain. What §5.7 discusses is present in the raw signal and absent
+recording to obtain. What §5.8 discusses is present in the raw signal and absent
 from this representation, which is a different thing from having been destroyed
 by it.
 
@@ -871,7 +874,44 @@ absolute timing would learn to detect fusion as *a patient whose heart rate is
 high*, and would appear to transfer from DS1 to DS2 only because those two
 recordings happen to share the trait.
 
-### 5.7 Limitations
+### 5.7 What the gap does and does not say about the models
+
+A distinction worth drawing explicitly, because the rest of this report invites
+the wrong reading of it.
+
+This study measures two **evaluation protocols**, not two model qualities. The
+inter-patient model trains on 22 recordings and is tested on 22 it has never
+seen. The intra-patient model trains on all 44 and is tested on further beats
+from those same 44. The second figure is inflated as an estimate of performance
+on a new patient. It is not inflated as an estimate of performance on a patient
+the model has already seen some of, which is a different question and a
+legitimate one.
+
+Nor does the comparison establish which model is better. The intra-patient
+model trains on twice as many recordings, and by the argument of §5.1 that is
+the axis along which training data actually helps. On a third database it might
+well outperform the inter-patient model. This study cannot say: the intra-patient
+model has no unseen patients left in MIT-BIH to be tested on, which is the same
+fact that makes its reported figure uninformative about generalisation.
+
+The productive reading is not that beat-level evaluation is wrong but that it
+answers a question about adaptation while being reported as though it answered
+one about generalisation. Patient-adaptive classifiers, in which a global model
+is refined on a small amount of data from the individual being monitored, are an
+established line of work: de Chazal and Reilly proposed one in 2006, where an
+expert corrects a fraction of an incoming recording's beats and a local
+classifier is trained on them, and later systems combine a global model with a
+few minutes of patient-specific signal.
+
+The capacity result in §4.5 is encouraging for that design. Storing the training
+set and returning the nearest neighbour reaches 0.918 under a beat-level split
+against the network's 0.963: if most of what that setting measures is
+retrievable similarity, then a little data from the patient in front of you goes
+a long way. A Holter monitor is attached to one person. Adapting to that person
+is the design goal, not a form of cheating. What this study shows is that the
+number such a system reports must be labelled for what it is.
+
+### 5.8 Limitations
 
 Three kinds, and conflating them would misrepresent the work.
 
@@ -934,10 +974,18 @@ tables.
   appears in context as an N-to-S transition, so classifying transitions would
   build prematurity into the label definition. It changes the task and would be
   a separate study.
-- **Extension to INCART or the MIT-BIH Supraventricular database**, to test
-  whether the nesting structure is a property of this database or of ambulatory
-  arrhythmia data generally. This is the single most informative addition
-  available, because it addresses the limitation that no method can.
+- **Extension to INCART or the MIT-BIH Supraventricular database.** This is the
+  single most informative addition available, and it answers two questions at
+  once: whether the nesting structure is a property of this database or of
+  ambulatory arrhythmia data generally, and -- because a third database supplies
+  patients neither protocol has seen -- which of the two training sets actually
+  produces the better model, which §5.7 explains this study cannot determine.
+- **Patient-adaptive classification.** The established response to the gap
+  measured here is not to close it but to accept it and adapt to the individual.
+  Quantifying how much patient-specific data is needed, and reporting the
+  resulting figure as an adaptation result rather than a generalisation one,
+  would connect this work to that line. The nearest-neighbour result suggests
+  the amount required is small.
 - Generative augmentation is **not** on this list. A model fitted to one
   patient's fusion beats produces that patient's fusion beats;
   $N_{\text{eff}}$ is unchanged. Information that is absent cannot be
@@ -993,17 +1041,20 @@ git tag `v0.1.0-csv`.
    *A Systematic Review of ECG Arrhythmia Classification: Adherence to
    Standards, Fair Evaluation, and Embedded Feasibility.* arXiv:2503.07276,
    2025.
-10. Huang H, Liu J, Zhu Q, Wang R, Hu G. *A New Hierarchical Method for
+10. de Chazal P, Reilly RB. *A Patient-Adapting Heartbeat Classifier Using ECG
+    Morphology and Heartbeat Interval Features.* IEEE Trans Biomed Eng.
+    2006;53(12):2535-2543.
+11. Huang H, Liu J, Zhu Q, Wang R, Hu G. *A New Hierarchical Method for
    Inter-Patient Heartbeat Classification Using Random Projections and RR
    Intervals.* BioMedical Engineering OnLine. 2014;13:90.
-11. Kish L. *Survey Sampling.* Wiley, 1965. (design effect)
-12. Searle SR, Casella G, McCulloch CE. *Variance Components.* Wiley, 1992.
+12. Kish L. *Survey Sampling.* Wiley, 1965. (design effect)
+13. Searle SR, Casella G, McCulloch CE. *Variance Components.* Wiley, 1992.
    (unbalanced one-way random effects)
-13. Field CA, Welsh AH. *Bootstrapping Clustered Data.* J R Stat Soc B.
+14. Field CA, Welsh AH. *Bootstrapping Clustered Data.* J R Stat Soc B.
     2007;69(3):369-390.
-14. Efron B, Tibshirani RJ. *An Introduction to the Bootstrap.* Chapman & Hall,
+15. Efron B, Tibshirani RJ. *An Introduction to the Bootstrap.* Chapman & Hall,
     1993.
-15. Elkan C. *The Foundations of Cost-Sensitive Learning.* IJCAI, 2001.
-16. *DeepArrhythmia: Segment-Contextualized ECG Arrhythmia Classification via
+16. Elkan C. *The Foundations of Cost-Sensitive Learning.* IJCAI, 2001.
+17. *DeepArrhythmia: Segment-Contextualized ECG Arrhythmia Classification via
     Selective Evidence Acquisition.* arXiv:2605.16441. *(cited for fusion-class
     performance; verify against the source before submission)*
