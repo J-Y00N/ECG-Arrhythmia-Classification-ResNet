@@ -83,6 +83,12 @@ Together these imply beats from the same patient in both halves. A classifier
 can then reach the reported accuracy by recognising individual patients'
 idiosyncrasies, and the figure carries no information about a new patient.
 
+This is not an unusual situation. A 2025 systematic review of 122 ECG
+classification studies published between 2017 and 2024 found that 96 used the
+MIT-BIH database, 68 followed the AAMI recommendations, and **37 -- under a
+third -- adopted the inter-patient paradigm**. The protocol has been available
+since 2004; most of the field does not use it.
+
 ### 1.3 What this work does and does not claim
 
 This project does not replace an intra-patient evaluation with an inter-patient
@@ -188,20 +194,23 @@ by it.
 
 ### 2.4 Validation against published counts
 
-100,694 beats across 44 records. Against the published DS1/DS2 distribution:
+100,694 beats across 44 records, against the distribution tabulated in a 2025
+systematic review of this literature:
 
-| Class | Published DS1 | Here, DS1 | Published total | Here, total |
+| Class | Reference DS1 | Here, DS1 | Reference total | Here, total |
 |---|---:|---:|---:|---:|
-| N | 45,868 | 45,848 | 90,126 | 90,088 |
-| S | 942 | 944 | 2,779 | 2,781 |
-| V | 3,787 | 3,788 | **7,008** | **7,008** |
+| N | 45,866 | 45,848 | 90,125 | 90,088 |
+| **S** | **944** | **944** | **2,781** | **2,781** |
+| V | 3,788 | 3,788 | 7,009 | 7,008 |
 | F | 415 | 414 | 803 | 802 |
-| Q | 8 | 8 | **15** | **15** |
+| **Q** | **8** | **8** | **15** | **15** |
+| total | 51,021 | 51,002 | 100,733 | 100,694 |
 
-Ventricular and unclassifiable counts match exactly; the others differ by at
-most two beats, accounted for by beats whose window would overrun a record
-boundary. The AAMI mapping, the record exclusions and the partition are thus
-independently verified.
+Supraventricular and unclassifiable counts match exactly in both halves;
+ventricular and fusion differ by one beat each, and normal by 37, for a total
+shortfall of 39 in 100,733. These are beats whose window would overrun a record
+boundary and which are dropped rather than zero-padded. The AAMI mapping, the
+record exclusions and the partition are thus independently verified.
 
 ### 2.5 Class-patient nesting
 
@@ -412,11 +421,12 @@ design-effect relation is derived for a **mean** and for equal group sizes;
 
 These procedures are standard wherever observations are clustered within
 patients, and are established practice in clinical and diagnostic evaluation.
-Within the MIT-BIH beat-classification literature reviewed here, however,
-uncertainty is generally either not reported or reported from beat-level
-resampling. No instance of the recording being used as the resampling unit was
-found among the papers consulted, which is a limited sample rather than a
-systematic review.
+They appear not to have reached this benchmark. The 2025 systematic review
+summarises the reported performance of 122 studies, and that summary consists of
+point estimates throughout -- sensitivity, positive predictivity, F1, accuracy --
+with no interval accompanying any of them; where variation is reported it is
+across training runs rather than across patients. No instance of the recording
+being used as the resampling unit was found in the studies consulted here.
 
 The bootstrap resamples rows of the stored prediction table. Nothing is
 retrained and no models are combined, so it measures uncertainty from the
@@ -554,18 +564,21 @@ Prematurity is a property the two share, at normalised ratios of 0.763 and
 0.733, so a network handed timing learns that a beat is ectopic without learning
 which kind, and assigns it to whichever is four times more common in training.
 
-Two published points on the same partition give the scale. de Chazal et al.
-report a supraventricular sensitivity of 75.9% at a positive predictivity of
-38.5%, and a ventricular sensitivity of 77.7% at a positive predictivity of
-81.9%. A later random-forest study, which like this one drops the sparse classes
-from the classification, reports F1 scores of 0.980, 0.731 and 0.909 for normal,
-supraventricular and ventricular beats.
+Published inter-patient results give the scale. de Chazal et al. report a
+supraventricular sensitivity of 75.9% at a positive predictivity of 38.5%, and a
+ventricular sensitivity of 77.7% at a positive predictivity of 81.9%. Among the
+inter-patient studies tabulated in the 2025 systematic review, reported
+supraventricular F1 scores run from about 0.62 to 0.77, with ventricular F1
+around 0.83 to 0.90; a random-forest study that, like this one, drops the sparse
+classes from the classification reports 0.980, 0.731 and 0.909 for normal,
+supraventricular and ventricular beats. Fusion, where reported at all, fares
+badly: one inter-patient study lists a sensitivity of 0.25% for it.
 
 Against those, normal and ventricular performance here is comparable --
 ventricular sensitivity exceeds de Chazal's in every wide arm at a similar
 positive predictivity -- and supraventricular performance is not. The best arm
-reaches 0.641 in one seed and 0.26 averaged over three, against a reported
-0.731.
+reaches 0.641 in one seed and 0.26 averaged over three, against a published
+range beginning around 0.62.
 
 The comparison should be read with its differences in view. Both of those
 classifiers use two leads, explicit morphological features and multi-scale RR
@@ -863,8 +876,8 @@ recordings happen to share the trait.
 Three kinds, and conflating them would misrepresent the work.
 
 **Design choices, reversible.** Supraventricular F1 reaches 0.26 over three
-seeds against a published 0.731 on the same partition, and the following choices
-account for the difference. The morphology representation is a single lead
+seeds against a published inter-patient range beginning around 0.62, and the
+following choices account for the difference. The morphology representation is a single lead
 with no explicit features -- no QRS duration, no P-wave shape -- and no
 band-pass filtering, so the low-amplitude P wave that distinguishes an atrial
 ectopic beat is present in the window but weak. Interval features come from one
@@ -976,9 +989,10 @@ git tag `v0.1.0-csv`.
 8. *Investigating Feature Selection and Random Forests for Inter-Patient
    Heartbeat Classification.* Algorithms. 2020;13(4):75. *(reported F1 scores
    for N, SVEB and VEB; verify author list before submission)*
-9. *A Systematic Review of ECG Arrhythmia Classification: Adherence to
+9. Silva GAL, Silva PHL, Moreira GJP, Freitas VLS, Gertrudes JC, Luz EJS.
+   *A Systematic Review of ECG Arrhythmia Classification: Adherence to
    Standards, Fair Evaluation, and Embedded Feasibility.* arXiv:2503.07276,
-   2025. *(verify before submission)*
+   2025.
 10. Huang H, Liu J, Zhu Q, Wang R, Hu G. *A New Hierarchical Method for
    Inter-Patient Heartbeat Classification Using Random Projections and RR
    Intervals.* BioMedical Engineering OnLine. 2014;13:90.
