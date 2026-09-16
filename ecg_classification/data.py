@@ -121,7 +121,14 @@ def build_dataset_bundle(
     # rather than at cache-build time so the cache stays a faithful record of
     # what the database contains; deciding what to model is a modelling-layer
     # concern, and reversing this choice must not cost a 70 MB rebuild.
-    observed = labels == OBSERVATION_LABEL
+    # OBSERVATION_LABEL is None when the class is modelled; the split is then a
+    # no-op and the observation arrays come out empty, which every downstream
+    # guard already handles.
+    observed = (
+        np.zeros(len(labels), dtype=bool)
+        if OBSERVATION_LABEL is None
+        else labels == OBSERVATION_LABEL
+    )
     modelled = ~observed
     X_observe = features[observed].astype(np.float32, copy=False)
     r_observe = record_ids[observed]

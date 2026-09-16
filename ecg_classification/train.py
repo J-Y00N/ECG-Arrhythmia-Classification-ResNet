@@ -23,6 +23,7 @@ from ecg_classification.constants import (
     OBSERVATION_SYMBOL,
     POST_SAMPLES,
     PRE_SAMPLES,
+    KEEP_OBSERVATION,
     REPRESENTATION,
     RR_FEATURES,
     SAMPLE_LENGTH,
@@ -117,8 +118,9 @@ class TrainConfig:
         # as an argument, so it has to reach the directory name from there too:
         # without it two arms trained on the same protocol and seed would write
         # to the same place and the second would silently replace the first.
+        classes = "5" if KEEP_OBSERVATION else ""
         return (
-            f"{REPRESENTATION}-{self.protocol}{strict}-{self.augmentation_mode}"
+            f"{REPRESENTATION}{classes}-{self.protocol}{strict}-{self.augmentation_mode}"
             f"-{rebalancing}{stopping}-seed{self.seed}"
         )
 
@@ -521,6 +523,7 @@ def run_training(config: TrainConfig) -> dict[str, Any]:
     config_payload["model_input_length"] = SAMPLE_LENGTH
     config_payload["effective_fs"] = EFFECTIVE_FS
     config_payload["input_channels"] = INPUT_CHANNELS
+    config_payload["models_observation_class"] = KEEP_OBSERVATION
     config_payload["rr_features"] = list(RR_FEATURES) if USES_RR else None
     config_payload["pre_samples"] = PRE_SAMPLES
     config_payload["post_samples"] = POST_SAMPLES

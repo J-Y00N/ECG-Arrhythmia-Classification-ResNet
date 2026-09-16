@@ -74,14 +74,23 @@ AAMI_SYMBOL_TO_INDEX: dict[str, int] = {
     symbol: index for index, symbol in AAMI_LABEL_TO_SYMBOL.items()
 }
 
-#: Label the model does not learn. Beats carrying it are held out of every
-#: split and kept only as an observation set: they let us ask how a classifier
-#: that has never seen pure artefact behaves when it meets some. A confident
-#: "normal beat" on a detached-electrode waveform is a clinically dangerous
-#: failure mode, and 15 beats is enough to look at even though it is nowhere
-#: near enough to score.
-OBSERVATION_LABEL = 4
-OBSERVATION_SYMBOL = AAMI_LABEL_TO_SYMBOL[OBSERVATION_LABEL]
+#: Whether the unclassifiable class is modelled rather than held out.
+#:
+#: The default holds it out. Once the paced recordings are excluded, 15 beats
+#: remain database-wide, all of them artefact, and later inter-patient work
+#: commonly drops both fusion and unclassifiable beats from the classification
+#: for exactly that reason.
+#:
+#: Setting ECG_KEEP_Q=1 restores the five-class configuration de Chazal et al.
+#: used. It exists so that the exclusion can be reported as a measured
+#: difference rather than an argued one: comparing the two arms on the three
+#: classes that carry support says whether including Q changes anything for the
+#: classes that matter, which an argument from class size alone cannot.
+KEEP_OBSERVATION = _os.environ.get("ECG_KEEP_Q", "0") == "1"
+
+#: Label held out of the model, or None when it is modelled.
+OBSERVATION_LABEL: int | None = None if KEEP_OBSERVATION else 4
+OBSERVATION_SYMBOL = AAMI_LABEL_TO_SYMBOL[4]
 
 #: Model level. Compact codes, in fixed index order. The network emits logits in
 #: this order, so never reorder without retraining.
@@ -90,11 +99,17 @@ CLASS_SYMBOLS = [
     if index != OBSERVATION_LABEL
 ]
 
-LABEL_TO_NAME = {
+_ALL_NAMES = {
     0: "Normal beat",
     1: "Supraventricular ectopic beat",
     2: "Ventricular ectopic beat",
     3: "Fusion beat",
+    4: "Unknown or unclassifiable beat",
+}
+
+LABEL_TO_NAME = {
+    index: name for index, name in _ALL_NAMES.items()
+    if index != OBSERVATION_LABEL
 }
 
 #: Long descriptions, used for figure labels and classification reports.
@@ -258,17 +273,11 @@ TARGET_FS = 250
 #: contribution of normalising that timing rather than leaving it absolute --
 #: which matters because an absolute interval is a statement about a patient's
 #: resting rate and a ratio is a statement about the beat.
-
-#: ``wide187_rr`` holds both at once. The other two arms each recover one class
-#: at the other's expense -- wide187 favours ventricular beats, rr_ratio
-#: supraventricular ones -- so whether the window and the interval features are
-#: complementary or redundant is a question the pair cannot answer alone.
 _REPRESENTATIONS: dict[str, dict] = {
     "narrow":   {"pre": 62,  "post": 125, "input": 187, "rr": False},
     "wide187":  {"pre": 200, "post": 200, "input": 187, "rr": False},
     "wide400":  {"pre": 200, "post": 200, "input": 400, "rr": False},
     "rr_ratio": {"pre": 62,  "post": 125, "input": 187, "rr": True},
-    "wide187_rr":  {"pre": 200, "post": 200, "input": 187, "rr": True}, 
 }
 
 REPRESENTATION = _os.environ.get("ECG_REPRESENTATION", "narrow")
@@ -408,11 +417,16 @@ def _validate() -> None:
     assert not set(DS1) & set(DS2), "DS1 and DS2 overlap"
     assert len(AAMI_RECORDS) == 44, f"expected 44 AAMI records, found {len(AAMI_RECORDS)}"
     assert not set(AAMI_RECORDS) & set(PACED_RECORDS), "a paced record leaked into the AAMI set"
-    assert len(CLASS_SYMBOLS) == len(CLASS_NAMES) == NUM_CLASSES == 4, "class label tables disagree"
+    expected = 5 if KEEP_OBSERVATION else 4
+    assert len(CLASS_SYMBOLS) == len(CLASS_NAMES) == NUM_CLASSES == expected, (
+        f"class label tables disagree: expected {expected} classes"
+    )
     assert len(set(AAMI_SYMBOLS)) == 5, "the AAMI grouping should hold five classes"
     assert set(AAMI_SYMBOL_MAP.values()) <= set(AAMI_SYMBOLS), "symbol map emits an unknown class"
     assert set(SYMBOL_TO_INDEX) == set(CLASS_SYMBOLS), "symbol index table disagrees"
-    assert OBSERVATION_SYMBOL not in CLASS_SYMBOLS, "the observation class must not be a model class"
+    assert (OBSERVATION_SYMBOL in CLASS_SYMBOLS) == KEEP_OBSERVATION, (
+        "the observation class must be a model class only when ECG_KEEP_Q is set"
+    )
     assert AAMI_SYMBOLS[:NUM_CLASSES] == CLASS_SYMBOLS, (
         "model indices must match AAMI indices 0..3 so an existing cache stays valid"
     )

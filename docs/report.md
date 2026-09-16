@@ -130,6 +130,14 @@ Following AAMI EC57, the four recordings containing paced beats (102, 104, 107,
 217) are excluded, leaving 44. Records 102 and 104 have no MLII channel at all,
 surgical dressings having forced the use of V5.
 
+AAMI also recommends excluding segments of ventricular flutter and fibrillation.
+Flutter waves carry the annotation `!`, which belongs to no AAMI superclass and
+is therefore dropped during segmentation along with the other non-beat
+annotations: 472 such waves are removed from record 207. This is exclusion by
+symbol rather than by segment, so a beat annotated normal or ventricular inside
+a flutter episode would remain; agreement with the published DS1/DS2 totals
+suggests the number is small.
+
 ### 2.2 Class definitions
 
 AAMI EC57 groups the database's annotations into five classes. Once the paced
@@ -137,10 +145,12 @@ recordings are removed the symbols `/` and `f` disappear entirely and the Q clas
 retains only the literal `Q` annotation: **15 beats across the whole database**,
 all of them baseline wander or electrode transients.
 
-The model therefore has a four-unit head. de Chazal et al. dropped Q for this
-reason and the inter-patient literature has followed; a recent study likewise
-treats a three-class macro F1 as its interpretive endpoint because only N, S and
-V carry substantial support.
+The model therefore has a four-unit head. This departs from de Chazal et al.,
+who classified into all five AAMI classes, and follows instead a practice common
+in later inter-patient work, where Q is dropped on the grounds that what remains
+of it is not representative of anything a classifier is meant to detect.
+Restricting the interpretive endpoint further, to the three classes carrying
+substantial support, also has precedent.
 
 This is a further reason the earlier results are not comparable. That release
 retained the paced recordings, so its Q class held roughly eight thousand paced
@@ -149,6 +159,14 @@ than a handful of artefacts.
 
 The 15 Q beats are retained as an **observation set**, never trained on,
 validated on or scored, but passed through the trained model (§4.9).
+
+The exclusion is verified rather than argued. Running the same configuration
+with Q as a fifth output class moves the macro F1 over the three supported
+classes from 0.5924 to 0.5920, and Q itself scores 0.000. Giving an output unit
+to fifteen artefact beats changes nothing for the other classes and the unit
+learns nothing. Since de Chazal et al. classified into five classes, this also
+establishes that the two configurations agree on the classes that carry
+support.
 
 ### 2.3 Preprocessing
 
@@ -226,9 +244,14 @@ the split alone.
 
 Validation is split at the record level under `inter` because holding out beats
 from recordings the model also trains on would reintroduce, at the point of
-model selection, the leakage the protocol exists to remove. This is the one
-departure from de Chazal, who used a linear discriminant with a closed-form
-solution and therefore needed no validation set at all.
+model selection, the leakage the protocol exists to remove.
+
+de Chazal et al. also separated selection from assessment, using DS1 to choose
+among twelve candidate classifier configurations and DS2 for an independent
+assessment of the chosen one. The difference here is where the boundary falls:
+their selection consumed all of DS1, whereas a network trained by gradient
+descent needs a held-out set during training, so DS1 is divided again. In both
+arrangements DS2 is untouched until the end.
 
 ### 3.2 Representation arms
 
@@ -260,10 +283,31 @@ two. Absolute intervals are deliberately excluded; §4.8 shows why.
 
 ### 3.3 Model
 
-A 1D residual CNN: convolutional stem, five residual blocks, global average
-pooling, two-layer head. No layer, kernel size or channel count was modified
-from the version used with the CSV pipeline. With no interval features the
-forward pass and the parameter names are identical to that version.
+The classifier is a 1D convolutional network with residual connections. A stem
+maps the single input channel to 32 channels with a kernel-5 convolution,
+batch normalisation and ReLU. Five residual blocks follow; each holds two
+kernel-5 convolutions with batch normalisation, adds the block input to the
+second convolution's output, and closes with ReLU, a kernel-5 stride-2 max pool
+and dropout at 0.10. Global average pooling then reduces the sequence to one
+value per channel, and a two-layer head maps 32 to 64 to the class logits with
+ReLU and dropout at 0.20 between them.
+
+The design follows the residual heartbeat architecture of Kachuee et al.,
+retaining the modifications to normalisation, regularisation and classifier
+structure made in the earlier version of this project. The pooling deserves a
+note because it bears on §4.6: global average pooling discards where along the
+sequence a feature occurred, so the network reads the separation between two
+features but not the absolute position of one. A representation that encoded
+prematurity as a shift would therefore be invisible to it, while one that
+encodes it as the gap between two R peaks is not.
+
+**No layer, kernel size or channel count was changed in this study.** The
+convolutional trunk is byte-identical across every representation arm, and in
+the arms that supply interval features only the head's first layer widens, from
+32 inputs to 36. Where no interval features are supplied the forward pass and
+the parameter names match the version used with the CSV pipeline exactly, so
+checkpoints from those runs load without translation. Every difference in
+results is therefore attributable to the data and the protocol.
 
 ### 3.4 Augmentation
 
@@ -337,11 +381,15 @@ epoch limit.
 ### 3.9 Uncertainty
 
 Beats are clustered within recordings, so a bootstrap that resamples beats
-treats correlated observations as independent. The resampling unit here is the
-recording: a recording drawn twice contributes all of its beats twice. This
-answers *how would this model do on a different set of patients*, rather than
-*how much would the score move if beats were re-drawn from these same
-twenty-two*, which is not a useful question once those twenty-two have been seen.
+treats correlated observations as independent. Uncertainty is therefore
+estimated by a **cluster bootstrap** [Field and Welsh 2007]: the resampling unit
+is the recording, and a recording drawn twice contributes all of its beats
+twice. This answers *how would this model do on a different set of patients*,
+rather than *how much would the score move if beats were re-drawn from these
+same twenty-two*, which is not a useful question once those twenty-two have been
+seen. Two thousand resamples are drawn and the 2.5th and 97.5th percentiles of
+the resulting distribution are reported. A beat-level bootstrap is computed
+alongside, solely for comparison.
 
 Writing $Y_{ij}$ for the correctness of beat $j$ in recording $i$,
 
@@ -357,8 +405,18 @@ n_{\text{eff}} = \frac{n}{D_{\text{eff}}}
 $$
 
 with $\rho$ estimated by the method of moments from a one-way random-effects
-model. The design-effect relation is derived for a **mean** and for equal group
-sizes; §4.2 reports where it holds and where it does not.
+model [Searle et al. 1992], using the effective group size for unbalanced
+designs, and $D_{\text{eff}}$ the design effect of Kish [1965]. The
+design-effect relation is derived for a **mean** and for equal group sizes;
+§4.2 reports where it holds and where it does not.
+
+These procedures are standard wherever observations are clustered within
+patients, and are established practice in clinical and diagnostic evaluation.
+Within the MIT-BIH beat-classification literature reviewed here, however,
+uncertainty is generally either not reported or reported from beat-level
+resampling. No instance of the recording being used as the resampling unit was
+found among the papers consulted, which is a limited sample rather than a
+systematic review.
 
 The bootstrap resamples rows of the stored prediction table. Nothing is
 retrained and no models are combined, so it measures uncertainty from the
@@ -404,8 +462,9 @@ the accuracy row; the macro F1 ratio is reported as a descriptive quantity.
 
 The residual 16% is in the expected direction. Group sizes are unequal, ranging
 from 1,517 to 3,361 beats, which the formula does not accommodate; and a
-non-parametric cluster bootstrap over twenty-two groups is known to understate
-variance somewhat.
+non-parametric cluster bootstrap over a small number of groups is generally held
+to understate variance, though the magnitude under these conditions has not been
+checked against a source.
 
 > ⚠️ *Not sure:* the small-cluster property is widely cited but its magnitude
 > under these conditions has not been verified against a source here.
@@ -494,6 +553,24 @@ the split between the classes moves freely while the total does not.
 Prematurity is a property the two share, at normalised ratios of 0.763 and
 0.733, so a network handed timing learns that a beat is ectopic without learning
 which kind, and assigns it to whichever is four times more common in training.
+
+Two published points on the same partition give the scale. de Chazal et al.
+report a supraventricular sensitivity of 75.9% at a positive predictivity of
+38.5%, and a ventricular sensitivity of 77.7% at a positive predictivity of
+81.9%. A later random-forest study, which like this one drops the sparse classes
+from the classification, reports F1 scores of 0.980, 0.731 and 0.909 for normal,
+supraventricular and ventricular beats.
+
+Against those, normal and ventricular performance here is comparable --
+ventricular sensitivity exceeds de Chazal's in every wide arm at a similar
+positive predictivity -- and supraventricular performance is not. The best arm
+reaches 0.641 in one seed and 0.26 averaged over three, against a reported
+0.731.
+
+The comparison should be read with its differences in view. Both of those
+classifiers use two leads, explicit morphological features and multi-scale RR
+intervals, where this one uses a single lead and, in most arms, no interval
+features at all.
 
 **The `wide400` result does not survive its seeds.** Supraventricular F1 reads
 0.641, 0.071 and 0.075 across three; the standard deviation of the arm's macro
@@ -622,6 +699,52 @@ reproducible; record variation measures whether the result is about the model or
 about which patients were evaluated. The second is forty times the first, and
 the convention of reporting several seeds addresses only the first.
 
+### 4.13 The supraventricular class is not homogeneous in timing
+
+The interval features assume that a supraventricular beat is early relative to
+its patient's own rhythm. Measured per recording, that assumption holds in some
+and not in others.
+
+| Record | S beats | S share of rhythm | **S pre-RR / local mean** | N pre-RR / local mean |
+|---|---:|---:|---:|---:|
+| 201 | 128 | 6.5% | **0.499** | 1.045 |
+| 202 | 55 | 2.6% | 0.577 | 0.999 |
+| 222 | 209 | 8.4% | 0.637 | 1.007 |
+| 220 | 94 | 4.6% | 0.652 | 1.004 |
+| 100 | 33 | 1.5% | 0.747 | 1.000 |
+| **232** | **1,382** | **77.6%** | 0.736 | **1.812** |
+| 209 | 383 | 12.8% | 0.930 | 1.008 |
+| 234 | 50 | 1.8% | 0.986 | 0.999 |
+| 124 | 31 | 1.9% | 0.996 | 1.001 |
+| **207** | 106 | 5.7% | **1.003** | 1.001 |
+
+**Normalised prematurity for the supraventricular class ranges from 0.499 to
+1.003 across recordings.** In records 207, 124 and 234 these beats are not early
+at all. The AAMI grouping collects atrial premature, aberrated atrial premature,
+nodal premature and supraventricular premature beats under one label, and not
+every member of that set is defined by timing. A feature built on prematurity
+therefore describes some of the class and not the rest, which is part of why the
+interval arm in §4.6 gained less than its motivation suggests.
+
+**A second observation concerns the normalisation itself.** Record 232 is the
+only recording where normal beats do not read near 1.0; they read 1.812. Its
+rhythm is 77.6% supraventricular, so the eleven-beat local mean is largely made
+of ectopic intervals and the normal beats become the outliers against it.
+Normalising by a local mean assumes ectopy is the exception; where it is the
+rule, the reference frame is built from the thing it is meant to contrast
+against.
+
+This did not cost accuracy. Under `wide400` the model reaches 0.985 recall on
+that recording's normal beats despite their unusual ratio, which says it is not
+relying on interval features alone. What it does cost is the argument of §5.6:
+normalisation is patient-invariant only where the quantity being normalised
+away is not itself the pathology.
+
+The errors on record 232 fall as the rest of the study predicts. Of 1,382
+supraventricular beats, 1,108 are correct, 180 are called ventricular and 94
+normal -- two thirds of the errors going to the other ectopic class, in a
+recording containing no ventricular beats at all.
+
 ### 4.12 Sensitivity: records 201 and 202
 
 Records 201 and 202 come from the same male subject, and de Chazal places 201 in
@@ -719,7 +842,14 @@ The fourth row is where the principle bites. A window of fixed duration carries
 timing only on an absolute scale, because how many neighbouring beats fall
 inside it is the patient's resting rate. There is no way to normalise a window.
 
-Fusion beats show what that costs. On an absolute scale they look premature --
+There is a limit to it, and §4.13 marks it: normalising by a local mean assumes
+that what is being normalised away is nuisance rather than pathology. In record
+232, where three-quarters of the rhythm is ectopic, the local mean is built from
+the ectopy and the normal beats become the outliers. Ratios are patient-
+invariant when the patient's baseline is a baseline.
+
+Fusion beats show what the absolute scale costs. On an absolute scale they look
+premature --
 a median preceding interval of 0.564 s against 0.768 s for normal beats -- but
 normalised they sit at 0.983. Records 208 and 213 supply almost all of them and
 run at 103 and 108 beats per minute against 75 and 69 for typical records. The
@@ -732,7 +862,9 @@ recordings happen to share the trait.
 
 Three kinds, and conflating them would misrepresent the work.
 
-**Design choices, reversible.** The morphology representation is a single lead
+**Design choices, reversible.** Supraventricular F1 reaches 0.26 over three
+seeds against a published 0.731 on the same partition, and the following choices
+account for the difference. The morphology representation is a single lead
 with no explicit features -- no QRS duration, no P-wave shape -- and no
 band-pass filtering, so the low-amplitude P wave that distinguishes an atrial
 ectopic beat is present in the window but weak. Interval features come from one
@@ -838,13 +970,26 @@ git tag `v0.1.0-csv`.
 5. MIT-BIH Arrhythmia Database. PhysioNet. https://physionet.org/content/mitdb/1.0.0/
 6. ANSI/AAMI EC57. *Testing and Reporting Performance Results of Cardiac Rhythm
    and ST Segment Measurement Algorithms.* 1998.
-7. Huang H, Liu J, Zhu Q, Wang R, Hu G. *A New Hierarchical Method for
+7. Luz EJS, Schwartz WR, Camara-Chavez G, Menotti D. *ECG-based Heartbeat
+   Classification for Arrhythmia Detection: A Survey.* Comput Methods Programs
+   Biomed. 2016;127:144-164.
+8. *Investigating Feature Selection and Random Forests for Inter-Patient
+   Heartbeat Classification.* Algorithms. 2020;13(4):75. *(reported F1 scores
+   for N, SVEB and VEB; verify author list before submission)*
+9. *A Systematic Review of ECG Arrhythmia Classification: Adherence to
+   Standards, Fair Evaluation, and Embedded Feasibility.* arXiv:2503.07276,
+   2025. *(verify before submission)*
+10. Huang H, Liu J, Zhu Q, Wang R, Hu G. *A New Hierarchical Method for
    Inter-Patient Heartbeat Classification Using Random Projections and RR
    Intervals.* BioMedical Engineering OnLine. 2014;13:90.
-8. Kish L. *Survey Sampling.* Wiley, 1965. (design effect)
-9. Searle SR, Casella G, McCulloch CE. *Variance Components.* Wiley, 1992.
+11. Kish L. *Survey Sampling.* Wiley, 1965. (design effect)
+12. Searle SR, Casella G, McCulloch CE. *Variance Components.* Wiley, 1992.
    (unbalanced one-way random effects)
-10. Elkan C. *The Foundations of Cost-Sensitive Learning.* IJCAI, 2001.
-11. *DeepArrhythmia: Segment-Contextualized ECG Arrhythmia Classification via
+13. Field CA, Welsh AH. *Bootstrapping Clustered Data.* J R Stat Soc B.
+    2007;69(3):369-390.
+14. Efron B, Tibshirani RJ. *An Introduction to the Bootstrap.* Chapman & Hall,
+    1993.
+15. Elkan C. *The Foundations of Cost-Sensitive Learning.* IJCAI, 2001.
+16. *DeepArrhythmia: Segment-Contextualized ECG Arrhythmia Classification via
     Selective Evidence Acquisition.* arXiv:2605.16441. *(cited for fusion-class
     performance; verify against the source before submission)*
