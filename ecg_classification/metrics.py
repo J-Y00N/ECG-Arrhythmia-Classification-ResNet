@@ -158,7 +158,12 @@ def save_learning_curves(
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.plot(history["epoch"], history["train_loss"], label="Train loss")
     ax.plot(history["epoch"], history["valid_loss"], label="Validation loss")
-    ax.plot(history["epoch"], history["valid_macro_f1"], label="Validation macro F1")
+    # ax.plot(history["epoch"], history["valid_macro_f1"], label="Validation macro F1")
+    if "valid_macro_f1_scored" in history.columns:
+        ax.plot(history["epoch"], history["valid_macro_f1_scored"],
+                label="Validation macro F1 (selection classes)")
+    else:
+        ax.plot(history["epoch"], history["valid_macro_f1"], label="Validation macro F1")
     max_epoch = int(history["epoch"].max())
     if configured_max_epoch is None:
         configured_max_epoch = max_epoch
