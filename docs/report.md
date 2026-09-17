@@ -450,9 +450,11 @@ Crossing window context against explicit intervals gives an interaction of
 **−0.026**: the two sources of timing are redundant, not complementary. Adding
 intervals to the wider window buys 0.0015 over the window alone.
 
-The per-class view shows substitution rather than plateau. The two ectopic F1
-scores sum to 0.813, 0.985, 0.925 and 0.988 across the four arms — the split
-between the classes moves freely while the total does not. Prematurity is a
+The per-class view shows substitution rather than plateau. Across the four arms
+of the grid the two ectopic F1 scores sum to 0.813, 0.985, 0.925 and 0.988 — the
+split between the classes moves freely while the total does not. `wide400` is
+the exception at 1.459, and the paragraph below explains why that number is not
+one to build on. Prematurity is a
 property they share, at normalised ratios of 0.763 and 0.733, so a network handed
 timing learns that a beat is ectopic without learning which kind, and assigns it
 to whichever is four times more common in training.
@@ -654,7 +656,7 @@ The representation result is the most informative. Prematurity is shared between
 the two ectopic classes at 0.763 and 0.733 of the local mean, so timing
 identifies that a beat is ectopic without identifying which kind. Every arm
 therefore trades one class against the other, the sum of their F1 scores confined
-between 0.81 and 0.99. And §4.11 adds that the class is not even homogeneous in
+between 0.81 and 0.99 in the four arms that replicate. And §4.11 adds that the class is not even homogeneous in
 the property the feature was built on.
 
 ### 5.5 The structure prevents verification

@@ -317,11 +317,23 @@ def figure_representation(data, out):
     axes[1].bar(x + 0.18, [scores[n][2] for n in names], width=0.36,
                 color="#55A868", label="V")
     axes[1].plot(x, total, "k.--", ms=7, lw=1, label="S + V")
+    for position, value, name in zip(x, total, names):
+        axes[1].annotate(f"{value:.2f}", (position, value), textcoords="offset points",
+                         xytext=(0, 8), ha="center", fontsize=7.5)
+        # wide400 is the one arm whose sum leaves the band the others occupy, and
+        # it does so on the strength of a supraventricular score that two further
+        # seeds did not reproduce. Saying so on the figure stops the point
+        # estimate from reading as a counterexample to the text.
+        if name == "wide400":
+            axes[1].annotate("1 of 3 seeds", (position, value), textcoords="offset points",
+                             xytext=(0, 20), ha="center", fontsize=7, color="#888888")
     axes[1].set_xticks(x)
     axes[1].set_xticklabels(names, rotation=20, ha="right")
-    axes[1].set_ylim(0, 1.2)
+    # Headroom for the sum line and its labels; the legend sits below them so it
+    # does not cover the quantity the panel exists to show.
+    axes[1].set_ylim(0, 1.72)
     axes[1].set_title("The two ectopic classes, and their sum")
-    axes[1].legend(ncol=3)
+    axes[1].legend(ncol=3, loc="upper left", bbox_to_anchor=(0.0, 0.78))
 
     fig.tight_layout()
     fig.savefig(out / "result_representation.png")
