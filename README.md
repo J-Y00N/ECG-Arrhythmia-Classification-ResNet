@@ -1,212 +1,176 @@
-# ECG Arrhythmia Classification
+# ECG Arrhythmia Classification: Measuring the Inter-Patient Penalty
 
-![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
-![PyTorch](https://img.shields.io/badge/PyTorch-2.x-EE4C2C?logo=pytorch&logoColor=white)
-![Dataset](https://img.shields.io/badge/Dataset-MIT--BIH-0A7E8C)
-![Device](https://img.shields.io/badge/Device-MPS%20%7C%20CUDA%20%7C%20CPU-444444)
+A 1D residual CNN on MIT-BIH, rebuilt from the raw PhysioNet records so that the
+**recording** is an explicit factor in the design rather than an invisible one.
 
-This repository provides a refactored ECG heartbeat classification pipeline built from a previously notebook-driven project. The goal of the refactoring was to turn the project into a cleaner, reusable, and GitHub-ready codebase for five-class arrhythmia classification on MIT-BIH beat-level ECG data.
+An earlier version of this project used a widely distributed preprocessed CSV of
+MIT-BIH and reported 0.9746 accuracy. That file discards record identifiers and
+splits at the beat level, so beats from the same patient sit in both halves and
+patient-level evaluation is not merely absent from it but impossible. This
+version measures what that costs.
 
-## Highlights
+---
 
-- Refactored notebook-based workflow into a modular training pipeline
-- Supports augmentation ablation with `none`, `on_the_fly`, and `materialized` modes
-- Exports reusable experiment artifacts, evaluation reports, and figure assets
-- Achieved up to `0.9746` test accuracy and `0.8763` macro F1 in the 50-epoch MPS experiment
+## The result
 
-## Overview
+Same network, same preprocessing, same augmentation. Only the assignment of
+beats to halves differs. Macro F1 over the three classes with support, with 95%
+cluster bootstrap intervals:
 
-- Task: five-class heartbeat classification
-- Dataset: MIT-BIH beat-level CSV files
-- Input length: `187`
-- Model: refactored 1D CNN inspired by the referenced heartbeat classification architecture
-- Training entry point: `python -m ecg_classification.train`
+| Protocol | | macro F1 | 95% CI |
+|---|---|---:|---|
+| **intra** | beat-level split | **0.963** | [0.914, 0.981] |
+| **inter** | de Chazal DS1/DS2 | **0.592** | [0.531, 0.626] |
 
-Expected dataset files:
+The intervals are separated by 0.28. Per class the loss is not uniform: normal
+beats lose 0.03 and ventricular 0.17, while supraventricular and fusion beats
+fall from 0.91 and 0.81 to **zero**.
 
-- `data/mitbih/mitbih_train.csv`
-- `data/mitbih/mitbih_test.csv`
+---
 
-## Result Snapshot
+## What the project found
 
-The best-performing configuration in the current report used `materialized augmentation` and produced the following test-set results:
+**Classes are nested inside patients, and that one fact explains the rest.**
+By inverse Simpson index the effective number of contributing recordings is 21.0
+for normal beats and **1.24 for fusion** — one recording supplies 90% of the
+training half's fusion beats, another 75% of the test half's supraventricular
+ones. Across four classes the penalty orders inversely with that count.
 
-| Accuracy | Macro F1 | LRAP | Ranking loss | Coverage error |
-|---:|---:|---:|---:|---:|
-| `0.9746` | `0.8763` | `0.9866` | `0.0077` | `1.0310` |
+**The recording is the sampling unit, and beat-level intervals are far too
+narrow.** Correctness is clustered at an intraclass correlation of 0.35, giving
+a design effect of 795 and an effective sample size of **64 from 49,660 beats**.
+On accuracy — the statistic the design-effect formula is derived for — it
+predicts the interval-width ratio to within 16%.
 
-Representative comparison figure:
+**A beat-level split hides the structure that inflates it.** The same
+intraclass correlation reads **0.013** under that protocol. Measured there, the
+data look very nearly independent and a beat-level bootstrap looks justified.
 
-<p align="center">
-  <img src="docs/assets/result/result_augmentation_comparison.png" alt="Augmentation comparison" width="760">
-</p>
+**Aggregate calibration hides where the model fails.** Expected calibration
+error is 0.024 overall and **0.725 on the recording the model handles worst**,
+where it claims 0.949 confidence at 0.224 accuracy. Low accuracy invites review;
+misplaced confidence does not.
 
-*Figure. Comparison of the three augmentation settings across the main test metrics.*
+**Most of what a beat-level split measures is retrievable, not learned.**
+Storing the training set and returning the nearest neighbour reaches 0.918
+against the network's 0.963.
 
-Representative method figure:
+**Consequently nothing could be shown to help.** Five rebalancing strengths, an
+oversampler, five representation arms, three augmentation modes and three
+learning rates were compared; every difference fell inside the record-level
+interval. Two hypotheses stated in advance were tested and refuted, the second
+only after two additional seeds.
 
-<p align="center">
-  <img src="docs/assets/method/method_model_architecture.png" alt="Model architecture" width="760">
-</p>
+---
 
-*Figure. Refactored 1D CNN architecture and end-to-end training workflow, adapted from the referenced heartbeat classification model.*
+## What it does not claim
 
-Detailed analysis is available in [docs/report.md](docs/report.md).
+It does not claim beat-level evaluation is wrong. It measures two protocols, not
+two model qualities — the intra-patient model trains on twice as many
+recordings and might well be the better model, which MIT-BIH has no unseen
+patients left to decide. A beat-level figure answers a question about adaptation
+while being reported as though it answered one about generalisation, and
+patient-adaptive classification is an established and reasonable design.
 
-## Classes
+It improves nothing. Supraventricular F1 reaches 0.26 over three seeds against a
+published inter-patient range beginning around 0.62, for reasons set out in the
+report: a single lead, no explicit morphological features, no band-pass filter,
+interval features at one scale only.
 
-| Label | Symbol | Class name |
-|---:|:---:|---|
-| 0 | N | Normal beat |
-| 1 | S | Supraventricular ectopic beat |
-| 2 | V | Ventricular ectopic beat |
-| 3 | F | Fusion beat |
-| 4 | Q | Unknown or unclassifiable beat |
+---
 
-Readable class names are used throughout the refactored codebase and evaluation outputs.
+## Reproducing
 
-## Repository Structure
+```bash
+pip install -e .
 
-```text
+# download the raw records and build a cache (~5 min, once per arm)
+python -m ecg_classification.mitdb --build-cache
+
+# the headline comparison
+python -m ecg_classification.train --protocol intra --seed 42
+python -m ecg_classification.train --protocol inter --seed 42
+
+# uncertainty, per-record decomposition, calibration
+python -m analysis.bootstrap   outputs/inter-none-lossweight0-seed42
+python -m analysis.records     outputs/inter-none-lossweight0-seed42 \
+                               --intra outputs/intra-none-lossweight0-seed42
+python -m analysis.calibration outputs/inter-none-lossweight0-seed42
+```
+
+Representation arms are selected by environment variable; the cache directory is
+derived from the arm, so an arm cannot be pointed at the wrong cache.
+
+```bash
+ECG_REPRESENTATION=wide187 python -m ecg_classification.mitdb --build-cache
+ECG_REPRESENTATION=wide187 python -m ecg_classification.train --protocol inter
+```
+
+| Arm | Window | Model input | Effective rate | Interval features |
+|---|---|---:|---:|:---:|
+| `narrow` | 0.75 s | 187 | 250 Hz | no |
+| `wide187` | 1.60 s | 187 | 117 Hz | no |
+| `wide400` | 1.60 s | 400 | 250 Hz | no |
+| `rr_ratio` | 0.75 s | 187 | 250 Hz | yes |
+| `wide187_rr` | 1.60 s | 187 | 117 Hz | yes |
+
+---
+
+## Layout
+
+```
 ecg_classification/
-├── augment.py     # Signal augmentation utilities
-├── constants.py   # Label names, symbols, and shared constants
-├── data.py        # CSV loading, split logic, dataset, and sampler
-├── figures.py     # EDA, method, and result figure generation
-├── metrics.py     # Evaluation metrics, reports, and plots
-├── model.py       # Residual 1D CNN definition
-├── train.py       # Training entry point
-└── utils.py       # Runtime and helper utilities
-
-notebooks/
-└── JM_Source_Code_refactored.ipynb
-
+  constants.py     record partitions, AAMI mapping, representation arms
+  mitdb.py         raw WFDB records to cache; protocol splits
+  data.py          cache to Datasets; class weights
+  augment.py       time, amplitude and noise augmentation
+  model.py         1D residual CNN
+  train.py         training loop, artefacts, prediction table
+  predictions.py   per-beat predictions with their recording
+analysis/
+  bootstrap.py     cluster bootstrap, ICC, design effect
+  records.py       per-record decomposition, effective patient count
+  calibration.py   reliability, per-recording calibration, artefact beats
+  baselines.py     1-NN and logistic capacity baselines
 docs/
-└── report.md      # Experiment report
+  report.md        full write-up
 ```
 
-## What This Repository Includes
+Every run writes `predictions.csv`: one row per beat, with the recording it came
+from. Every analysis reads that file. Nothing downstream requires re-running
+inference.
 
-- modularized training and evaluation code
-- readable class mapping and cleaner outputs
-- augmentation ablation with `none`, `on_the_fly`, and `materialized` modes
-- saved experiment artifacts and publication-friendly figures
-- a separate experiment report in [docs/report.md](docs/report.md)
+---
 
-## Installation
+## Data
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
+44 of the 48 MIT-BIH recordings, the four with paced beats excluded per AAMI
+EC57. Beat counts match the distribution tabulated in a 2025 systematic review
+exactly for supraventricular and unclassifiable beats and by 39 in 100,733
+overall, the difference being beats whose window would overrun a record edge.
 
-python -m pip install --upgrade pip setuptools wheel
-python -m pip install -e .
-python -m pip check
-```
+The unclassifiable class holds 15 beats after paced-record exclusion, all of them
+baseline wander or electrode transients, and is held out of the model. Including
+it as a fifth output changes the three-class macro F1 from 0.5924 to 0.5920 and
+scores 0.000 itself.
 
-## Training
+---
 
-Run a short smoke test:
+## History
 
-```bash
-python -m ecg_classification.train \
-  --epochs 3 \
-  --batch-size 256 \
-  --output-dir outputs/smoke_run
-```
+The CSV-based pipeline and its results are preserved at the tag `v0.1.0-csv` and
+described in Appendix A of the report. They are excluded from every comparison
+here because they differ in four respects at once — data source, split protocol,
+class definition and beat extraction — and cannot be attributed to any one.
 
-Run the default baseline:
+## Reading
 
-```bash
-python -m ecg_classification.train \
-  --epochs 50 \
-  --batch-size 256 \
-  --output-dir outputs/baseline_run
-```
-
-Run the same setting without augmentation:
-
-```bash
-python -m ecg_classification.train \
-  --epochs 50 \
-  --batch-size 256 \
-  --disable-augmentation \
-  --output-dir outputs/baseline_run_no_aug
-```
-
-Run with materialized augmentation:
-
-```bash
-python -m ecg_classification.train \
-  --epochs 50 \
-  --batch-size 256 \
-  --augmentation-mode materialized \
-  --materialized-copies-per-sample 1 \
-  --output-dir outputs/baseline_run_static_aug
-```
-
-The training script automatically uses `cuda`, `mps`, or `cpu` depending on availability.
-
-## Figure Generation
-
-Generate EDA, method, and result figures from a completed run:
-
-```bash
-python -m ecg_classification.figures \
-  --run-dir outputs/baseline_run \
-  --output-dir docs/assets
-```
-
-Generate comparison figures across multiple runs:
-
-```bash
-python -m ecg_classification.figures \
-  --run-dir outputs/baseline_run \
-  --output-dir docs/assets \
-  --compare-run on_the_fly outputs/baseline_run \
-  --compare-run no_aug outputs/baseline_run_no_aug \
-  --compare-run materialized outputs/baseline_run_static_aug
-```
-
-Generated figures include:
-
-- class distribution and representative beat examples
-- augmentation before/after visualization
-- model and pipeline summary figure
-- confusion matrix and learning curves
-- augmentation comparison chart
-
-## Output Artifacts
-
-Each training run writes the following files:
-
-- `best_model.pt`
-- `history.csv`
-- `config.json`
-- `metrics.json`
-- `classification_report.txt`
-- `confusion_matrix.png`
-- `learning_curves.png`
-
-`metrics.json` includes:
-
-- `loss`
-- `accuracy`
-- `macro_f1`
-- `label_ranking_average_precision`
-- `label_ranking_loss`
-- `coverage_error`
-
-## Documentation
-
-- Repository overview and usage: this `README.md`
-- Experimental results and interpretation: [docs/report.md](docs/report.md)
+- [`docs/report.md`](docs/report.md) — methods, results, discussion
+- `git checkout v0.1.0-csv` — the superseded pipeline
 
 ## References
 
-If you use this project or build on the dataset and model background, the following references are relevant:
-
-1. Kachuee M, Fazeli S, Sarrafzadeh M. *ECG Heartbeat Classification: A Deep Transferable Representation*. 2018 IEEE International Conference on Healthcare Informatics Workshops (ICHI-W), 2018. IEEE Xplore: https://ieeexplore.ieee.org/document/8419425 . arXiv: https://arxiv.org/pdf/1805.00794
-2. Moody GB, Mark RG. *The Impact of the MIT-BIH Arrhythmia Database*. IEEE Engineering in Medicine and Biology Magazine. 2001;20(3):45-50. DOI: `10.1109/51.932724`. PubMed: https://pubmed.ncbi.nlm.nih.gov/11446209/
-3. Goldberger AL, Amaral LAN, Glass L, et al. *PhysioBank, PhysioToolkit, and PhysioNet: Components of a New Research Resource for Complex Physiologic Signals*. Circulation. 2000;101(23):e215-e220. PubMed: https://pubmed.ncbi.nlm.nih.gov/10851218/
-4. MIT-BIH Arrhythmia Database. PhysioNet dataset page: https://physionet.org/content/mitdb/1.0.0/ . Dataset DOI: https://doi.org/10.13026/C2F305
+The protocol is that of de Chazal, O'Dwyer and Reilly (IEEE TBME 2004); the
+architecture follows Kachuee, Fazeli and Sarrafzadeh (ICHI-W 2018); the
+resampling and design-effect procedures follow Field and Welsh (JRSS-B 2007) and
+Kish (1965). Full list in the report.
