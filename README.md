@@ -28,7 +28,7 @@ The intervals are separated by 0.28. Per class the loss is not uniform: normal b
 
 **Classes are nested inside patients, and that one fact explains the rest.** By inverse Simpson index the effective number of contributing recordings is 21.0 for normal beats and **1.24 for fusion** — one recording supplies 90% of the training half's fusion beats, another 75% of the test half's supraventricular ones. Across four classes the penalty orders inversely with that count.
 
-**The recording is the sampling unit, and beat-level intervals are far too narrow.** Correctness is clustered at an intraclass correlation of 0.35, giving a design effect of 795 and an effective sample size of **64 from 49,660 beats**. On accuracy — the statistic the design-effect formula is derived for — it predicts the interval-width ratio to within 16%.
+**The recording is the sampling unit, and beat-level intervals are far too narrow.** Correctness is clustered at an intraclass correlation of 0.35, giving a design effect of 795 and an effective sample size of **62 from 49,660 beats**. On accuracy — the statistic the design-effect formula is derived for — it predicts the interval-width ratio to within 16%.
 
 **A beat-level split hides the structure that inflates it.** The same intraclass correlation reads **0.013** under that protocol. Measured there, the data look very nearly independent and a beat-level bootstrap looks justified.
 
