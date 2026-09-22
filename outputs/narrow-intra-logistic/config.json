@@ -1,0 +1,9 @@
+{
+  "run_name": "narrow-intra-logistic",
+  "representation": "narrow",
+  "protocol": "intra",
+  "model": "logistic",
+  "accuracy": 0.9349423917361939,
+  "macro_f1": 0.6127739557788555,
+  "macro_f1_nsv": 0.6871618111683442
+}

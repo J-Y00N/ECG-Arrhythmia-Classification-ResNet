@@ -7,19 +7,40 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 from ecg_classification.augment import BeatAugmenter
-from ecg_classification.constants import NUM_CLASSES
+from ecg_classification.constants import (
+    CLASS_SYMBOLS,
+    EFFECTIVE_FS,
+    INPUT_CHANNELS,
+    MODEL_INTERVAL_FEATURES,
+    NUM_CLASSES,
+    OBSERVATION_SYMBOL,
+    POST_SAMPLES,
+    PRE_SAMPLES,
+    KEEP_OBSERVATION,
+    REPRESENTATION,
+    RR_FEATURES,
+    SAMPLE_LENGTH,
+    USES_RR,
+    WINDOW_LENGTH,
+)
+from ecg_classification import mitdb
 from ecg_classification.data import (
+    DatasetBundle,
     HeartbeatDataset,
     build_dataset_bundle,
     class_distribution,
+    class_weights,
     materialize_augmented_dataset,
     make_weighted_sampler,
+    record_class_distribution,
+    scored_classes,
 )
 from ecg_classification.metrics import (
     evaluate_model,
@@ -28,31 +49,85 @@ from ecg_classification.metrics import (
     save_metrics_bundle,
 )
 from ecg_classification.model import ResidualCNN
+from ecg_classification.predictions import collect_predictions, save_predictions
 from ecg_classification.utils import NumpyJSONEncoder, configure_torch_runtime, default_device, ensure_directory, set_seed
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
+#: Classes used for model selection. Fixed here rather than derived per split.
+#:
+#: The fusion class cannot support model selection under the inter-patient
+#: protocol. Ninety percent of DS1's fusion beats come from record 208, so a
+#: validation split either holds that record -- leaving training with about
+#: forty fusion beats -- or it does not, leaving validation with almost none.
+#: The two requirements are incompatible, and no choice of validation size
+#: resolves it.
+#:
+#: Deriving the set per split instead makes it vary by seed: at a validation
+#: size of 0.10 one seed scored on N and S while another scored on N and V, so
+#: the seeds were selecting their models against different objectives and
+#: averaging across them meant nothing. Fixing the set costs a little
+#: information about fusion during training and buys a comparison that holds.
+#:
+#: Selection is restricted; reporting is not. Test metrics cover all four
+#: classes, and DS2 carries enough fusion beats to score them.
+SELECTION_CLASSES: tuple[int, ...] = (0, 1, 2)
+
 
 @dataclass(slots=True)
 class TrainConfig:
-    train_csv: Path = PROJECT_ROOT / "data" / "mitbih" / "mitbih_train.csv"
-    test_csv: Path = PROJECT_ROOT / "data" / "mitbih" / "mitbih_test.csv"
-    output_dir: Path = PROJECT_ROOT / "outputs" / "baseline_run"
-    validation_size: float = 0.10
+    protocol: str = "inter"
+    output_dir: Path | None = None
+    data_dir: Path = PROJECT_ROOT / "data"
+    strict_disjoint: bool = False
+    validation_size: float = 0.20
     batch_size: int = 256
-    epochs: int = 30
+    epochs: int = 100
     learning_rate: float = 1e-3
     weight_decay: float = 1e-4
-    patience: int = 8
+    patience: int = 15
     seed: int = 42
     num_workers: int = 0
-    use_weighted_sampler: bool = True
+    use_class_weighted_loss: bool = True
+    weight_power: float = 0.0
+    use_weighted_sampler: bool = False
     augment_probability: float = 0.60
-    augment_labels: tuple[int, ...] = (1, 2, 3, 4)
-    augmentation_mode: str = "on_the_fly"
+    disable_early_stopping: bool = False
+    augment_labels: tuple[int, ...] = (1, 2, 3)
+    augmentation_mode: str = "none"
     materialized_copies_per_sample: int = 1
     label_smoothing: float = 0.05
     show_progress: bool = False
+
+    def run_name(self) -> str:
+        """Directory name encoding every factor that varies across the matrix.
+
+        Runs differ only in protocol, augmentation mode, rebalancing scheme and
+        seed, so naming by those four keeps twenty output directories readable
+        and makes an accidental overwrite obvious rather than silent.
+        """
+        if self.use_class_weighted_loss:
+            rebalancing = f"lossweight{self.weight_power:g}"
+        elif self.use_weighted_sampler:
+            rebalancing = "sampler"
+        else:
+            rebalancing = "noreweight"
+        strict = "-strict" if self.strict_disjoint else ""
+        stopping = "-fullrun" if self.disable_early_stopping else ""
+        # The representation arm is read from the environment rather than passed
+        # as an argument, so it has to reach the directory name from there too:
+        # without it two arms trained on the same protocol and seed would write
+        # to the same place and the second would silently replace the first.
+        classes = "5" if KEEP_OBSERVATION else ""
+        return (
+            f"{REPRESENTATION}{classes}-{self.protocol}{strict}-{self.augmentation_mode}"
+            f"-{rebalancing}{stopping}-seed{self.seed}"
+        )
+
+    def resolved_output_dir(self) -> Path:
+        if self.output_dir is not None:
+            return self.output_dir
+        return PROJECT_ROOT / "outputs" / self.run_name()
 
 
 class EarlyStopping:
@@ -72,6 +147,32 @@ class EarlyStopping:
 
         self.bad_epochs += 1
         return self.bad_epochs >= self.patience
+
+
+def macro_f1_from_confusion(matrix: np.ndarray, class_indices: list[int]) -> float:
+    """Macro F1 restricted to the given classes, computed from a confusion matrix.
+
+    Model selection needs this because the validation half of the inter-patient
+    protocol is only two recordings, and minority classes in this database sit
+    in a handful of recordings. A validation split can therefore contain no
+    fusion beats at all, in which case an unrestricted macro average scores an
+    absent class as zero and drags the metric down by a quarter every epoch.
+    The offset is constant, so the ranking of epochs survives, but the number
+    reported alongside it would be meaningless.
+
+    Restricting the average to classes that are actually present keeps the
+    metric about the model. Which classes those were is written into
+    ``config.json``, so nothing is hidden by the restriction.
+    """
+    confusion = np.asarray(matrix, dtype=np.float64)
+    scores: list[float] = []
+    for index in class_indices:
+        true_positive = confusion[index, index]
+        false_positive = confusion[:, index].sum() - true_positive
+        false_negative = confusion[index, :].sum() - true_positive
+        denominator = 2.0 * true_positive + false_positive + false_negative
+        scores.append(0.0 if denominator == 0 else 2.0 * true_positive / denominator)
+    return float(np.mean(scores)) if scores else 0.0
 
 
 def train_one_epoch(
@@ -117,22 +218,33 @@ def train_one_epoch(
 def build_dataloaders(
     config: TrainConfig,
     device: torch.device,
-) -> tuple[DataLoader, DataLoader, DataLoader, dict[str, dict[int, int]]]:
-    """Create train, validation, and test dataloaders."""
+) -> tuple[DataLoader, DataLoader, DataLoader, DataLoader, DatasetBundle, np.ndarray, dict[str, Any]]:
+    """Create dataloaders for training, validation, test and the observation set."""
     bundle = build_dataset_bundle(
-        train_csv=config.train_csv,
-        test_csv=config.test_csv,
+        protocol=config.protocol,
+        seed=config.seed,
         validation_size=config.validation_size,
-        random_state=config.seed,
+        data_dir=config.data_dir,
+        strict_disjoint=config.strict_disjoint,
     )
 
     augmenter = BeatAugmenter()
     train_features = bundle.X_train
     train_labels = bundle.y_train
+    train_intervals = bundle.i_train
 
     dataset_augmenter: BeatAugmenter | None = None
     dataset_augment_probability = 0.0
     if config.augmentation_mode == "materialized":
+        if train_intervals is not None:
+            # Materialised augmentation appends rows, and the interval table
+            # would no longer line up with them. Duplicating a beat's intervals
+            # alongside its waveform is possible but meaningless: the copy is a
+            # time-stretched beat whose real intervals differ from the original's.
+            raise NotImplementedError(
+                "materialized augmentation is not defined for arms that supply "
+                "interval features; run this arm with --augmentation-mode none"
+            )
         train_features, train_labels = materialize_augmented_dataset(
             train_features,
             train_labels,
@@ -148,13 +260,27 @@ def build_dataloaders(
     train_dataset = HeartbeatDataset(
         train_features,
         train_labels,
+        intervals=train_intervals,
         augmenter=dataset_augmenter,
         augment_labels=config.augment_labels,
         augment_probability=dataset_augment_probability,
         seed=config.seed,
     )
-    valid_dataset = HeartbeatDataset(bundle.X_valid, bundle.y_valid, seed=config.seed)
-    test_dataset = HeartbeatDataset(bundle.X_test, bundle.y_test, seed=config.seed)
+    valid_dataset = HeartbeatDataset(
+        bundle.X_valid, bundle.y_valid, intervals=bundle.i_valid, seed=config.seed
+    )
+    test_dataset = HeartbeatDataset(
+        bundle.X_test, bundle.y_test, intervals=bundle.i_test, seed=config.seed
+    )
+
+    # The observation set carries no model label; zeros are placeholders and the
+    # true-label column is overwritten before the table is written out.
+    observe_dataset = HeartbeatDataset(
+        bundle.X_observe,
+        np.zeros(len(bundle.X_observe), dtype=np.int64),
+        intervals=bundle.i_observe,
+        seed=config.seed,
+    )
 
     sampler = make_weighted_sampler(train_labels) if config.use_weighted_sampler else None
 
@@ -171,26 +297,21 @@ def build_dataloaders(
         shuffle=sampler is None,
         **loader_kwargs,
     )
-    valid_loader = DataLoader(
-        valid_dataset,
-        batch_size=config.batch_size,
-        shuffle=False,
-        **loader_kwargs,
-    )
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=config.batch_size,
-        shuffle=False,
-        **loader_kwargs,
-    )
+    # Evaluation loaders must not shuffle or drop a partial batch: the
+    # prediction table pairs their output with record identifiers by position.
+    valid_loader = DataLoader(valid_dataset, batch_size=config.batch_size, shuffle=False, **loader_kwargs)
+    test_loader = DataLoader(test_dataset, batch_size=config.batch_size, shuffle=False, **loader_kwargs)
+    observe_loader = DataLoader(observe_dataset, batch_size=config.batch_size, shuffle=False, **loader_kwargs)
 
-    distributions = {
+    distributions: dict[str, Any] = {
         "train": class_distribution(train_labels),
         "valid": class_distribution(bundle.y_valid),
         "test": class_distribution(bundle.y_test),
+        "train_by_record": record_class_distribution(bundle.y_train, bundle.r_train),
+        "valid_by_record": record_class_distribution(bundle.y_valid, bundle.r_valid),
     }
 
-    return train_loader, valid_loader, test_loader, distributions
+    return train_loader, valid_loader, test_loader, observe_loader, bundle, train_labels, distributions
 
 
 def run_training(config: TrainConfig) -> dict[str, Any]:
@@ -198,12 +319,59 @@ def run_training(config: TrainConfig) -> dict[str, Any]:
     set_seed(config.seed)
     device = default_device()
     configure_torch_runtime(device)
-    output_dir = ensure_directory(config.output_dir)
+    output_dir = ensure_directory(config.resolved_output_dir())
 
-    train_loader, valid_loader, test_loader, distributions = build_dataloaders(config, device)
+    (
+        train_loader,
+        valid_loader,
+        test_loader,
+        observe_loader,
+        bundle,
+        train_labels,
+        distributions,
+    ) = build_dataloaders(config, device)
 
-    model = ResidualCNN(num_classes=NUM_CLASSES).to(device)
-    criterion = torch.nn.CrossEntropyLoss(label_smoothing=config.label_smoothing)
+    # The cache path is derived from the arm, so a mismatch should be impossible.
+    # The manifest is checked anyway: it costs nothing and would catch a cache
+    # left behind by an earlier definition of the same arm, which a path alone
+    # cannot distinguish from a current one.
+    manifest_path = mitdb.cache_dir_for(config.data_dir) / "cache_manifest.json"
+    if not manifest_path.exists():
+        raise RuntimeError(f"no cache manifest at {manifest_path}; rebuild the cache")
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    cached_arm = manifest.get("representation")
+    if cached_arm != REPRESENTATION:
+        raise RuntimeError(
+            f"ECG_REPRESENTATION is {REPRESENTATION!r} but the cache at "
+            f"{config.data_dir} declares {cached_arm!r}. Point --data-dir at the "
+            f"matching cache, or rebuild it under this arm with --force.\n"
+            f"A cache built before the arms existed declares None; rebuilding it "
+            f"produces identical beats and only adds the field."
+        )
+
+    # Weights are computed from the labels the network actually sees, which
+    # differ from the bundle's under materialized augmentation.
+    weight = (
+        class_weights(train_labels, power=config.weight_power).to(device)
+        if config.use_class_weighted_loss
+        else None
+    )
+    valid_scored = list(SELECTION_CLASSES)
+    valid_supported = scored_classes(bundle.y_valid)
+
+    missing = [c for c in valid_scored if c not in valid_supported]
+    if missing:
+        print(
+            f"Warning: selection classes {missing} have little or no support in this "
+            f"validation split (supported: {valid_supported}). Selection proceeds on "
+            f"the fixed set so that seeds remain comparable."
+        )
+
+    model = ResidualCNN(
+        num_classes=NUM_CLASSES, n_interval_features=MODEL_INTERVAL_FEATURES
+    ).to(device)
+    criterion = torch.nn.CrossEntropyLoss(weight=weight, label_smoothing=config.label_smoothing)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=config.learning_rate,
@@ -238,7 +406,8 @@ def run_training(config: TrainConfig) -> dict[str, Any]:
             device=device,
         )
 
-        scheduler.step(valid_metrics["macro_f1"])
+        selection_f1 = macro_f1_from_confusion(valid_metrics["confusion_matrix"], valid_scored)
+        scheduler.step(selection_f1)
 
         current_lr = optimizer.param_groups[0]["lr"]
         history_rows.append(
@@ -249,6 +418,7 @@ def run_training(config: TrainConfig) -> dict[str, Any]:
                 "valid_loss": float(valid_metrics["loss"]),
                 "valid_accuracy": float(valid_metrics["accuracy"]),
                 "valid_macro_f1": float(valid_metrics["macro_f1"]),
+                "valid_macro_f1_scored": float(selection_f1),
                 "learning_rate": float(current_lr),
             }
         )
@@ -259,21 +429,40 @@ def run_training(config: TrainConfig) -> dict[str, Any]:
             f"train_acc={train_metrics['accuracy']:.4f} | "
             f"valid_loss={valid_metrics['loss']:.4f} | "
             f"valid_acc={valid_metrics['accuracy']:.4f} | "
-            f"valid_macro_f1={valid_metrics['macro_f1']:.4f} | "
+            f"valid_macro_f1={selection_f1:.4f} | "
             f"lr={current_lr:.6f}"
         )
 
-        if float(valid_metrics["macro_f1"]) > best_valid_f1:
-            best_valid_f1 = float(valid_metrics["macro_f1"])
+        if selection_f1 > best_valid_f1:
+            best_valid_f1 = selection_f1
             best_epoch = epoch
             best_state = {name: tensor.detach().cpu().clone() for name, tensor in model.state_dict().items()}
 
-        if early_stopping.step(float(valid_metrics["macro_f1"])):
+        stop_now = early_stopping.step(selection_f1)
+        if stop_now and not config.disable_early_stopping:
             print(f"Early stopping triggered at epoch {epoch}.")
             break
 
     if best_state is None:
         raise RuntimeError("Training did not produce a valid checkpoint.")
+
+    # The model currently holds its final-epoch weights. Scoring them before
+    # restoring the best checkpoint costs one extra pass and yields a quantity
+    # the rest of the project has no other way to measure: how much the network
+    # gives up by continuing to fit the training recordings past its best
+    # validation epoch. The prediction is that this gap is larger under the
+    # inter-patient protocol, where overfitting to training patients is paid for
+    # directly, than under intra-patient, where the test recordings were seen
+    # during training and overfitting to them is partly rewarded.
+    final_state = {name: tensor.detach().cpu().clone() for name, tensor in model.state_dict().items()}
+    final_epoch = len(history_rows)
+    final_metrics = evaluate_model(
+        model=model,
+        dataloader=test_loader,
+        criterion=criterion,
+        device=device,
+    )
+    torch.save(final_state, output_dir / "final_model.pt")
 
     model.load_state_dict(best_state)
     model.to(device)
@@ -285,6 +474,33 @@ def run_training(config: TrainConfig) -> dict[str, Any]:
         device=device,
     )
 
+    # One row per beat, with the recording it came from. Every patient-level
+    # analysis downstream reads this file rather than re-running inference.
+    prediction_frame = collect_predictions(
+        model=model,
+        dataloader=test_loader,
+        record_ids=bundle.r_test,
+        beat_indices=bundle.split.test_index,
+        device=device,
+    )
+    save_predictions(prediction_frame, output_dir)
+
+    # The unclassifiable beats, which the model never saw. Not scored: fifteen
+    # beats is nowhere near enough. Kept because how a classifier trained only
+    # on clean morphology responds to pure artefact is a calibration question
+    # worth looking at, and confident output on a detached-electrode waveform
+    # would be a clinically dangerous failure mode.
+    if len(bundle.X_observe):
+        observation_frame = collect_predictions(
+            model=model,
+            dataloader=observe_loader,
+            record_ids=bundle.r_observe,
+            beat_indices=np.arange(len(bundle.r_observe)),
+            device=device,
+        )
+        observation_frame["y_true"] = -1
+        observation_frame.to_csv(output_dir / "observations.csv", index=False, float_format="%.6f")
+
     torch.save(best_state, output_dir / "best_model.pt")
 
     history_frame = pd.DataFrame(history_rows)
@@ -294,35 +510,83 @@ def run_training(config: TrainConfig) -> dict[str, Any]:
     save_confusion_matrix(test_metrics["confusion_matrix"], output_dir / "confusion_matrix.png")
     save_learning_curves(history_frame, output_dir / "learning_curves.png", configured_max_epoch=config.epochs)
 
+    test_scored = scored_classes(bundle.y_test)
+    test_macro_f1_scored = macro_f1_from_confusion(test_metrics["confusion_matrix"], test_scored)
+    final_macro_f1_scored = macro_f1_from_confusion(final_metrics["confusion_matrix"], test_scored)
+
     config_payload = asdict(config)
-    config_payload["train_csv"] = str(config.train_csv)
-    config_payload["test_csv"] = str(config.test_csv)
-    config_payload["output_dir"] = str(config.output_dir)
+    config_payload["output_dir"] = str(output_dir)
+    config_payload["data_dir"] = str(config.data_dir)
+    config_payload["run_name"] = config.run_name()
+    config_payload["representation"] = REPRESENTATION
+    config_payload["window_length"] = WINDOW_LENGTH
+    config_payload["model_input_length"] = SAMPLE_LENGTH
+    config_payload["effective_fs"] = EFFECTIVE_FS
+    config_payload["input_channels"] = INPUT_CHANNELS
+    config_payload["models_observation_class"] = KEEP_OBSERVATION
+    config_payload["rr_features"] = list(RR_FEATURES) if USES_RR else None
+    config_payload["pre_samples"] = PRE_SAMPLES
+    config_payload["post_samples"] = POST_SAMPLES
     config_payload["device"] = str(device)
     config_payload["best_epoch"] = best_epoch
+    config_payload["final_epoch"] = final_epoch
+    config_payload["stopped_by"] = (
+        "epoch_limit" if final_epoch >= config.epochs else "early_stopping"
+    )
+    config_payload["final_test_accuracy"] = float(final_metrics["accuracy"])
+    config_payload["final_test_macro_f1"] = float(final_metrics["macro_f1"])
     config_payload["best_valid_macro_f1"] = best_valid_f1
+    config_payload["class_symbols"] = list(CLASS_SYMBOLS)
+    config_payload["observation_symbol"] = OBSERVATION_SYMBOL
+    config_payload["n_observation_beats"] = int(len(bundle.X_observe))
     config_payload["class_distributions"] = distributions
+    config_payload["class_weights"] = None if weight is None else weight.cpu().tolist()
+    config_payload["selection_classes"] = valid_scored
+    config_payload["valid_supported_classes"] = valid_supported
+    config_payload["test_scored_classes"] = test_scored
+    # The split description is what makes the "only the protocol changed" claim
+    # checkable: diffing two runs' config.json should show one differing field.
+    config_payload["split"] = bundle.split.describe()
 
     with open(output_dir / "config.json", "w", encoding="utf-8") as file:
         json.dump(config_payload, file, indent=2, cls=NumpyJSONEncoder)
 
-    result = {
+    return {
         "output_dir": output_dir,
         "best_epoch": best_epoch,
         "best_valid_macro_f1": best_valid_f1,
         "test_accuracy": float(test_metrics["accuracy"]),
         "test_macro_f1": float(test_metrics["macro_f1"]),
+        "test_macro_f1_scored": float(test_macro_f1_scored),
+        "final_epoch": final_epoch,
+        "final_test_accuracy": float(final_metrics["accuracy"]),
+        "final_test_macro_f1": float(final_metrics["macro_f1"]),
+        "final_test_macro_f1_scored": float(final_macro_f1_scored),
     }
-    return result
 
 
 def parse_args() -> TrainConfig:
     defaults = TrainConfig()
 
     parser = argparse.ArgumentParser(description="Train the refactored ECG classifier.")
-    parser.add_argument("--train-csv", type=Path, default=defaults.train_csv)
-    parser.add_argument("--test-csv", type=Path, default=defaults.test_csv)
-    parser.add_argument("--output-dir", type=Path, default=defaults.output_dir)
+    parser.add_argument(
+        "--protocol",
+        choices=["intra", "inter"],
+        default=defaults.protocol,
+        help="inter assigns whole recordings following de Chazal; intra splits at the beat level.",
+    )
+    parser.add_argument(
+        "--strict-disjoint",
+        action="store_true",
+        help="Drop record 202, whose subject also appears in DS1 as record 201.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="Defaults to outputs/<representation>-<protocol>-<augmentation>-<rebalancing>-seed<n>.",
+    )
+    parser.add_argument("--data-dir", type=Path, default=defaults.data_dir)
     parser.add_argument("--validation-size", type=float, default=defaults.validation_size)
     parser.add_argument("--batch-size", type=int, default=defaults.batch_size)
     parser.add_argument("--epochs", type=int, default=defaults.epochs)
@@ -350,14 +614,41 @@ def parse_args() -> TrainConfig:
         help="Alias for --augmentation-mode none.",
     )
     parser.add_argument(
+        "--disable-early-stopping",
+        action="store_true",
+        help=(
+            "Train for the full epoch budget. The best checkpoint is still saved and "
+            "scored, so this only changes how far the final-epoch model is allowed to drift."
+        ),
+    )
+    parser.add_argument(
         "--show-progress",
         action="store_true",
         help="Show per-batch tqdm progress bars.",
     )
     parser.add_argument(
-        "--disable-weighted-sampler",
+        "--weight-power",
+        type=float,
+        default=defaults.weight_power,
+        help=(
+            "Exponent on the inverse-frequency class weights. 0 is uniform, 1 is plain "
+            "inverse frequency. On this data 1 collapses training onto the rare classes, "
+            "so how much rebalancing is tolerable is itself worth measuring."
+        ),
+    )
+    parser.add_argument(
+        "--disable-class-weighted-loss",
         action="store_true",
-        help="Disable the weighted training sampler.",
+        help="Train with an unweighted loss.",
+    )
+    parser.add_argument(
+        "--enable-weighted-sampler",
+        action="store_true",
+        help=(
+            "Rebalance by oversampling instead of by loss weight. Kept for comparison "
+            "with the previous pipeline: minority classes here sit in a few recordings, "
+            "so oversampling replicates one patient's morphology rather than adding any."
+        ),
     )
     args = parser.parse_args()
 
@@ -379,13 +670,22 @@ def parse_args() -> TrainConfig:
         parser.error("--augment-probability must be in [0, 1].")
     if args.materialized_copies_per_sample <= 0:
         parser.error("--materialized-copies-per-sample must be a positive integer.")
+    if args.weight_power < 0.0:
+        parser.error("--weight-power must be >= 0.")
+    if args.enable_weighted_sampler and not args.disable_class_weighted_loss:
+        parser.error(
+            "--enable-weighted-sampler rebalances the data and --class-weighted-loss "
+            "rebalances the loss. Applying both compounds the correction; pass "
+            "--disable-class-weighted-loss as well if the sampler is what you want."
+        )
 
     augmentation_mode = "none" if args.disable_augmentation else args.augmentation_mode
 
     return TrainConfig(
-        train_csv=args.train_csv,
-        test_csv=args.test_csv,
+        protocol=args.protocol,
         output_dir=args.output_dir,
+        data_dir=args.data_dir,
+        strict_disjoint=args.strict_disjoint,
         validation_size=args.validation_size,
         batch_size=args.batch_size,
         epochs=args.epochs,
@@ -394,7 +694,10 @@ def parse_args() -> TrainConfig:
         patience=args.patience,
         seed=args.seed,
         num_workers=args.num_workers,
-        use_weighted_sampler=not args.disable_weighted_sampler,
+        disable_early_stopping=args.disable_early_stopping,
+        use_class_weighted_loss=not args.disable_class_weighted_loss,
+        weight_power=args.weight_power,
+        use_weighted_sampler=args.enable_weighted_sampler,
         augment_probability=0.0 if augmentation_mode == "none" else args.augment_probability,
         augmentation_mode=augmentation_mode,
         materialized_copies_per_sample=args.materialized_copies_per_sample,
@@ -407,10 +710,14 @@ def main() -> None:
     result = run_training(config)
     print(
         "Training complete | "
+        f"run={config.run_name()} | "
+        f"fs={EFFECTIVE_FS:.0f}Hz | "
         f"best_epoch={result['best_epoch']} | "
         f"best_valid_macro_f1={result['best_valid_macro_f1']:.4f} | "
         f"test_accuracy={result['test_accuracy']:.4f} | "
-        f"test_macro_f1={result['test_macro_f1']:.4f}"
+        f"test_macro_f1={result['test_macro_f1']:.4f} | "
+        f"final_epoch={result['final_epoch']} | "
+        f"final_test_macro_f1={result['final_test_macro_f1']:.4f}"
     )
 
 
