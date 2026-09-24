@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- Report and README overstated three results: the interventions (none improved on the baseline beyond the record-level interval, while inverse-frequency weighting collapsed training), the protocol gap (38% of the three-class macro F1, not half), and the design-effect residual, which had been attributed to unequal group sizes.
+- Report: completed reference 11 and replaced an unchecked claim about the leads used by published classifiers with what their papers state.
+- CHANGELOG: multi-label ranking metrics were listed as removed in 0.2.0; they remain in `metrics.py`.
+
 ## [0.2.0]
 
 The pipeline was rebuilt from the raw PhysioNet records so that the recording is an explicit factor in the design. Results from 0.1.0 are not comparable and are excluded from every comparison; see `docs/report.md`, Appendix A.
@@ -19,6 +26,7 @@ The pipeline was rebuilt from the raw PhysioNet records so that the recording is
 - MLII selected by channel name, which handles record 114.
 - Model selection restricted to N, S and V, which every validation split can support.
 - Class-weight exponent exposed, defaulting to 0.
+- Learning curves plot the selection metric, macro F1 over N, S and V, rather than the unrestricted macro F1.
 
 ### Fixed
 - Augmentation clipped its output to [0, 1], which saturated 9.5% of samples under the new normalisation and flattened the QRS complex.
@@ -26,7 +34,6 @@ The pipeline was rebuilt from the raw PhysioNet records so that the recording is
 
 ### Removed
 - CSV loader and the CSV-based figure generation.
-- Multi-label ranking metrics, which were defined for a problem this is not.
 
 ## [0.1.0]
 

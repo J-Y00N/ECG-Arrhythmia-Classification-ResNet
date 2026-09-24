@@ -36,7 +36,7 @@ The intervals are separated by 0.28. Per class the loss is not uniform: normal b
 
 **Most of what a beat-level split measures is retrievable, not learned.** Storing the training set and returning the nearest neighbour reaches 0.918 against the network's 0.963.
 
-**Consequently nothing could be shown to help.** Five rebalancing strengths, an oversampler, five representation arms, three augmentation modes and three learning rates were compared; every difference fell inside the record-level interval. Two hypotheses stated in advance were tested and refuted, the second only after two additional seeds.
+**Consequently nothing could be shown to help.** Five rebalancing strengths, an oversampler, five representation arms, three augmentation modes and three learning rates were compared; none improved on the simplest configuration beyond the record-level interval. Two hypotheses stated in advance were tested and refuted, the second only after two additional seeds.
 
 ---
 
@@ -62,8 +62,7 @@ python -m ecg_classification.train --protocol inter --seed 42
 
 # uncertainty, per-record decomposition, calibration
 python -m analysis.bootstrap   outputs/inter-none-lossweight0-seed42
-python -m analysis.records     outputs/inter-none-lossweight0-seed42 \
-                               --intra outputs/intra-none-lossweight0-seed42
+python -m analysis.records     outputs/inter-none-lossweight0-seed42 --intra outputs/intra-none-lossweight0-seed42
 python -m analysis.calibration outputs/inter-none-lossweight0-seed42
 
 # every figure in the report
@@ -75,6 +74,14 @@ Representation arms are selected by environment variable; the cache directory is
 ```bash
 ECG_REPRESENTATION=wide187 python -m ecg_classification.mitdb --build-cache
 ECG_REPRESENTATION=wide187 python -m ecg_classification.train --protocol inter
+```
+
+On Windows PowerShell the variable is set on its own line:
+
+```powershell
+$env:ECG_REPRESENTATION = "wide187"
+python -m ecg_classification.mitdb --build-cache
+python -m ecg_classification.train --protocol inter
 ```
 
 | Arm | Window | Model input | Effective rate | Interval features |

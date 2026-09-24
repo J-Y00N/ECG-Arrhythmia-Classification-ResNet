@@ -8,11 +8,11 @@ That patient-level evaluation is harder than beat-level evaluation has been know
 
 An earlier version of this project used a preprocessed CSV release of MIT-BIH and reported 0.9746 accuracy. That file discards record identifiers and splits at the beat level, so patient-level evaluation is not merely absent but impossible. The pipeline was rebuilt from the raw records, reproducing the published DS1/DS2 class counts to within 39 beats in 100,733.
 
-Separating patients costs about half the macro F1 — 0.592 against 0.963 over the three scoreable classes, with cluster bootstrap intervals that do not overlap. The loss is not uniform: normal beats lose 0.03 and ventricular 0.17, while supraventricular and fusion fall to zero. Minority classes are nested inside a handful of recordings — the effective number of contributing records, by inverse Simpson index, is 21.0 for normal beats and 1.24 for fusion — and the per-class penalty orders inversely with that count.
+Separating patients costs over a third of the macro F1 — 0.592 against 0.963 over the three scoreable classes, with cluster bootstrap intervals that do not overlap. The loss is not uniform: normal beats lose 0.03 and ventricular 0.17, while supraventricular and fusion fall to zero. Minority classes are nested inside a handful of recordings — the effective number of contributing records, by inverse Simpson index, is 21.0 for normal beats and 1.24 for fusion — and the per-class penalty orders inversely with that count.
 
 Three findings concern measurement. Beats are clustered within recordings at an intraclass correlation of 0.35, giving a design effect of 795 and an effective sample size of 62 from 49,660 beats; beat-level intervals are 24 times too narrow on accuracy, a factor the design effect predicts to within 16%. A beat-level split hides the structure that inflates it, the same correlation reading 0.013 under that protocol. And aggregate calibration hides where the model fails: an expected calibration error of 0.024 overall against 0.725 on the recording handled worst, where the model claims 0.949 confidence at 0.224 accuracy.
 
-Consequently no intervention could be shown to help. Five rebalancing strengths, an oversampler, five representation arms and three learning rates were compared; every difference fell inside the record-level interval, and two hypotheses stated in advance were refuted. Twenty-two recordings are not enough to distinguish these interventions, and the interval that shows this is the one that shows the protocol gap to be real.
+Consequently no intervention could be shown to help. Five rebalancing strengths, an oversampler, five representation arms and three learning rates were compared; none improved on the simplest configuration beyond the record-level interval, and two hypotheses stated in advance were refuted. Twenty-two recordings are not enough to distinguish these interventions, and the interval that shows this is the one that shows the protocol gap to be real.
 
 **Keywords:** ECG classification, MIT-BIH, inter-patient evaluation, cluster bootstrap, design effect, class-patient nesting, AAMI EC57
 
@@ -234,7 +234,7 @@ Under `inter`, correctness is clustered at $\rho = 0.352$ with 2,257 beats per r
 | **accuracy** | 0.00457 | 0.11097 | **24.27** | **28.20** |
 | macro F1 (N/S/V) | 0.0110 | 0.1761 | 16.04 | 28.20 |
 
-The design-effect relation is derived for a mean, and accuracy is a mean: there prediction and observation agree to within 16%. Applied to macro F1 — a ratio of ratios, outside the derivation — it misses by 76%. The validation is the accuracy row; the macro F1 ratio is descriptive. The residual is in the expected direction: group sizes range from 1,517 to 3,361 beats, which the formula does not accommodate.
+The design-effect relation is derived for a mean, and accuracy is a mean: there prediction and observation agree to within 16%. Applied to macro F1 — a ratio of ratios, outside the derivation — it misses by 76%. The validation is the accuracy row; the macro F1 ratio is descriptive. The formula is a first-order approximation that assumes equal group sizes, which these are not (1,517 to 3,361 beats), so agreement to within 16% is the check rather than exact equality.
 
 **This establishes the resampling unit, not the size of the gap**, which is established in §4.1 and survives it.
 
@@ -295,7 +295,7 @@ The penalty is not a uniform limit of the model but failure on particular patien
 | residual CNN | convolutional | 0.9632 | 0.5924 | 0.371 | 0.346 |
 | logistic | linear | 0.6872 | 0.4727 | **0.215** | 0.293 |
 
-The gap orders with capacity, the linear model's being roughly half the network's. The sharper observation is in the intra column: **storing the training set and returning its nearest member reaches 0.918 against the network's 0.963.** Most of what a beat-level split measures is retrievable similarity rather than learned pattern, because the nearest neighbour of a test beat is generally another beat from the same recording. Intraclass correlation orders the same way: the model that only memorises has the highest.
+The gap orders with capacity, the linear model's at 0.215 against the network's 0.371. The sharper observation is in the intra column: **storing the training set and returning its nearest member reaches 0.918 against the network's 0.963.** Most of what a beat-level split measures is retrievable similarity rather than learned pattern, because the nearest neighbour of a test beat is generally another beat from the same recording. Intraclass correlation orders the same way: the model that only memorises has the highest.
 
 <p align="center">
   <img src="assets/result/result_capacity.png" alt="Figure 7" width="660">
@@ -332,7 +332,7 @@ The per-class view shows substitution rather than plateau. Across the four grid 
 
 **`wide400` is the exception at 1.459, and does not survive its seeds.** Supraventricular F1 reads 0.641, 0.071 and 0.075 across three; the arm's standard deviation is 25 times `wide187`'s. In the seed that succeeded, record 232 — 75% of DS2's supraventricular beats — was classified at 0.889 against 0.000 elsewhere.
 
-For scale, de Chazal et al. report a supraventricular sensitivity of 75.9% at a positive predictivity of 38.5% [2]. Inter-patient F1 for that class is 60.74% for an SVM ensemble and 73.06% for a random forest using normalised R–R intervals and QRS-width features [10], and 0.74 for a random forest given a CNN-derived rhythm context feature [11]. Ventricular performance here is comparable to those; the best supraventricular arm reaches 0.641 in one seed and 0.26 over three. All three of those classifiers use interval features; two use more than one lead.
+For scale, de Chazal et al. report a supraventricular sensitivity of 75.9% at a positive predictivity of 38.5% [2]. Inter-patient F1 for that class is 60.74% for an SVM ensemble and 73.06% for a random forest using normalised R–R intervals and QRS-width features [10], and 0.74 for a random forest given a CNN-derived rhythm context feature [11]. Ventricular performance here is comparable to those; the best supraventricular arm reaches 0.641 in one seed and 0.26 over three. de Chazal's classifier and both random forests combine morphology with R–R interval features, which most arms here lack.
 
 <p align="center">
   <img src="assets/result/result_representation.png" alt="Figure 8" width="900">
@@ -559,10 +559,9 @@ Training accuracy exceeds 99.4% at the validation peak under every setting, so t
 8. Luz EJS, Schwartz WR, Camara-Chavez G, Menotti D. *ECG-based Heartbeat Classification for Arrhythmia Detection: A Survey.* Comput Methods Programs Biomed. 2016;127:144–164.
 9. Silva GAL, Silva PHL, Moreira GJP, Freitas VLS, Gertrudes JC, Luz EJS. *A Systematic Review of ECG Arrhythmia Classification: Adherence to Standards, Fair Evaluation, and Embedded Feasibility.* arXiv:2503.07276, 2025.
 10. Sáenz-Cogollo JF, Agelli M. *Investigating Feature Selection and Random Forests for Inter-Patient Heartbeat Classification.* Algorithms. 2020;13(4):75. doi:10.3390/a13040075
-11. *Heartbeat Classification by Random Forest With a Novel Context Feature: A Segment Label.* IEEE J Transl Eng Health Med. 2022. doi:10.1109/JTEHM.2022.3202749
+11. Zou C, Müller A, Utschick W, Rückert D, Müller P, Becker M, Steger A, Martens E. *Heartbeat Classification by Random Forest With a Novel Context Feature: A Segment Label.* IEEE J Transl Eng Health Med. 2022;10. doi:10.1109/JTEHM.2022.3202749
 12. Field CA, Welsh AH. *Bootstrapping Clustered Data.* J R Stat Soc B. 2007;69(3):369–390.
 13. Kish L. *Survey Sampling.* Wiley, 1965.
 14. Searle SR, Casella G, McCulloch CE. *Variance Components.* Wiley, 1992.
 15. Efron B, Tibshirani RJ. *An Introduction to the Bootstrap.* Chapman & Hall, 1993.
 16. Elkan C. *The Foundations of Cost-Sensitive Learning.* IJCAI, 2001.
-
