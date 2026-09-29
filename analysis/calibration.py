@@ -241,23 +241,40 @@ def save_reliability_figure(results: dict[str, dict], path: Path) -> None:
     figure, axes = plt.subplots(1, 2, figsize=(11, 4.2))
     floor = 1.0 / len(CLASS_SYMBOLS)
 
+    def short(label: str) -> str:
+        # Run names are long; the protocol is what distinguishes the two curves.
+        parts = label.split("-")
+        return next((p for p in parts if p in ("inter", "intra")), label)
+
+    colours = ["#C44E52", "#4C72B0"]
     axes[0].plot([floor, 1], [floor, 1], "k--", lw=0.8, label="perfect calibration")
-    for label, result in results.items():
+    for index, (label, result) in enumerate(results.items()):
         table = result["table"]
         populated = table[table.n > 0]
-        axes[0].plot(populated.confidence, populated.accuracy, "o-", ms=4,
-                     label=f"{label}  ECE {result['ece']:.3f}")
+        colour = colours[index % len(colours)]
+        axes[0].plot(populated.confidence, populated.accuracy, "-", lw=1.5, color=colour,
+                     label=f"{short(label)}  ECE {result['ece']:.3f}")
+        # A bin holding a handful of predictions can sit anywhere; drawing it
+        # hollow keeps it from reading as evidence.
+        sparse = populated.n < 20
+        axes[0].plot(populated.confidence[~sparse], populated.accuracy[~sparse], "o",
+                     ms=5, color=colour)
+        axes[0].plot(populated.confidence[sparse], populated.accuracy[sparse], "o",
+                     ms=5, mfc="white", color=colour)
     axes[0].set_xlabel("claimed confidence")
     axes[0].set_ylabel("observed accuracy")
     axes[0].set_title("Reliability")
-    axes[0].legend(fontsize=8)
+    axes[0].legend(fontsize=8, loc="lower right", title="hollow: fewer than 20 predictions",
+                   title_fontsize=7)
 
-    width = 0.8 / max(len(results), 1)
     for offset, (label, result) in enumerate(results.items()):
         table = result["table"]
         centres = (table.bin_low + table.bin_high) / 2
-        axes[1].bar(centres + offset * width * 0.05, table.n.fillna(0),
-                    width=(1 - floor) / len(table) * 0.9, alpha=0.55, label=label)
+        bin_width = (1 - floor) / len(table)
+        bar_width = bin_width * 0.9 / max(len(results), 1)
+        shift = (offset - (len(results) - 1) / 2) * bar_width
+        axes[1].bar(centres + shift, table.n.fillna(0), width=bar_width,
+                    color=colours[offset % len(colours)], label=short(label))
     axes[1].set_xlabel("claimed confidence")
     axes[1].set_ylabel("predictions")
     axes[1].set_yscale("log")

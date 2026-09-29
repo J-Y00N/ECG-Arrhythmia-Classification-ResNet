@@ -194,13 +194,22 @@ def figure_per_record(data, out):
     table = pd.DataFrame(rows).sort_values("accuracy")
 
     fig, axis = plt.subplots(figsize=(7.2, 3.4))
-    colours = ["#C44E52" if a < 0.95 else "#4C72B0" for a in table.accuracy]
+    # The three recordings the title names, and only those, are highlighted.
+    errors = (1 - table.accuracy) * table.n
+    weakest = set(errors.nlargest(3).index)
+    share = errors.nlargest(3).sum() / errors.sum()
+    colours = ["#C44E52" if i in weakest else "#4C72B0" for i in table.index]
     axis.bar(range(len(table)), table.accuracy, color=colours)
     axis.set_xticks(range(len(table)))
     axis.set_xticklabels(table.record, rotation=90, fontsize=7)
-    axis.axhline(table.accuracy.median(), color="k", lw=0.7, ls="--")
-    axis.text(len(table) - 0.5, table.accuracy.median() + 0.012,
-              f"median {table.accuracy.median():.3f}", ha="right", fontsize=8)
+    median = table.accuracy.median()
+    axis.axhline(median, color="k", lw=0.7, ls="--")
+    # Left of the chart the bars sit below the median line, so the label is clear.
+    axis.text(-0.4, median + 0.02, f"median {median:.3f}", ha="left", va="bottom",
+              fontsize=8)
+    axis.legend(handles=[plt.Rectangle((0, 0), 1, 1, color="#C44E52")],
+                labels=[f"three weakest: {share:.0%} of all errors"],
+                loc="lower right", fontsize=8)
     axis.set_ylim(0, 1.05)
     axis.set_ylabel("accuracy")
     axis.set_xlabel("test recording")
@@ -235,9 +244,19 @@ def figure_neff_penalty(data, out, counts):
     axis.scatter(neff, penalty, s=70,
                  color=[palette[sym] for sym in CLASS_SYMBOLS], zorder=3)
     for x, y, symbol in zip(neff, penalty, CLASS_SYMBOLS):
-        axis.annotate(f"  {symbol}  (N_eff {x:.2f})", (x, y), fontsize=8, va="center")
+        axis.annotate(f"  {symbol}  ($N_{{\\mathrm{{eff}}}}$ {x:.2f})", (x, y),
+                      fontsize=8, va="center")
+    # Seed 42 holds record 208 out for validation, so fusion trains at zero
+    # loss weight in this run (report, section 3.3).
+    fusion = CLASS_SYMBOLS.index("F")
+    axis.annotate("zero loss weight in this seed", (neff[fusion], penalty[fusion]),
+                  xytext=(8, -14), textcoords="offset points", fontsize=7,
+                  color="#666666")
     axis.set_xscale("log")
-    axis.set_xlabel("effective contributing records in DS1  (log scale)")
+    axis.set_xticks([1, 2, 5, 10, 20])
+    axis.set_xticklabels(["1", "2", "5", "10", "20"])
+    axis.minorticks_off()
+    axis.set_xlabel("effective contributing records in DS1, $N_{\\mathrm{eff}}$  (log scale)")
     axis.set_ylabel("intra F1 − inter F1")
     axis.set_title("Classes drawn from fewer patients lose more")
     axis.set_xlim(0.9, 40)
@@ -274,8 +293,8 @@ def figure_capacity(data, out):
     axis.set_yticklabels([f"{m[0]}\n{m[3]}" for m in models])
     axis.set_xlim(0, 1.28)
     axis.set_xlabel("macro F1 over N, S, V")
-    axis.set_title("Nearest neighbour reaches 0.95 when the patients are shared")
-    axis.legend(loc="lower right")
+    axis.set_title("Nearest neighbour reaches 0.95 when the patients are shared", pad=22)
+    axis.legend(ncol=2, loc="lower center", bbox_to_anchor=(0.5, 1.0))
     fig.tight_layout()
     fig.savefig(out / "result_capacity.png")
     print("  wrote result_capacity.png")
@@ -308,8 +327,8 @@ def figure_representation(data, out):
     axes[0].set_xticklabels(names, rotation=20, ha="right")
     axes[0].set_ylabel("F1")
     axes[0].set_ylim(-0.04, 1.04)
-    axes[0].set_title("Per class, by representation")
-    axes[0].legend(ncol=4, loc="center left")
+    axes[0].set_title("Per class, by representation", pad=22)
+    axes[0].legend(ncol=4, loc="lower center", bbox_to_anchor=(0.5, 1.0))
 
     total = [scores[n][1] + scores[n][2] for n in names]
     axes[1].bar(x - 0.18, [scores[n][1] for n in names], width=0.36,
@@ -325,15 +344,16 @@ def figure_representation(data, out):
         # seeds did not reproduce. Saying so on the figure stops the point
         # estimate from reading as a counterexample to the text.
         if name == "wide400":
-            axes[1].annotate("1 of 3 seeds", (position, value), textcoords="offset points",
-                             xytext=(0, 20), ha="center", fontsize=7, color="#888888")
+            axes[1].annotate("S from 1 of 3 seeds", (position, value),
+                             textcoords="offset points", xytext=(12, -3), ha="left",
+                             va="center", fontsize=7, color="#888888")
     axes[1].set_xticks(x)
     axes[1].set_xticklabels(names, rotation=20, ha="right")
     # Headroom for the sum line and its labels; the legend sits below them so it
     # does not cover the quantity the panel exists to show.
-    axes[1].set_ylim(0, 1.72)
-    axes[1].set_title("The two ectopic classes, and their sum")
-    axes[1].legend(ncol=3, loc="upper left", bbox_to_anchor=(0.0, 0.78))
+    axes[1].set_ylim(0, 1.62)
+    axes[1].set_title("The two ectopic classes, and their sum", pad=22)
+    axes[1].legend(ncol=3, loc="lower center", bbox_to_anchor=(0.5, 1.0))
 
     fig.tight_layout()
     fig.savefig(out / "result_representation.png")
@@ -436,8 +456,8 @@ def figure_protocols(out):
     axes[1].set_xlabel("recording")
 
     handles = [plt.Rectangle((0, 0), 1, 1, color=c) for c in colours.values()]
-    axes[0].legend(handles, list(colours), ncol=3, loc="upper right",
-                   bbox_to_anchor=(1.0, 1.75))
+    axes[0].legend(handles, list(colours), ncol=3, loc="lower right",
+                   bbox_to_anchor=(1.0, 1.0))
     fig.tight_layout()
     fig.savefig(out / "method_protocols.png")
     print("  wrote method_protocols.png")
@@ -515,7 +535,9 @@ def main():
     if wanted is None or "gap" in wanted:
         figure_protocol_gap(data, args.out, args.reps, rng)
     if wanted is None or "widths" in wanted:
-        figure_bootstrap_widths(data, args.out, args.reps, rng)
+        # A generator of its own, drawing in the same order as analysis.bootstrap,
+        # so the widths shown are exactly those of Table 7.
+        figure_bootstrap_widths(data, args.out, args.reps, np.random.default_rng(args.seed))
     if wanted is None or "records" in wanted:
         figure_per_record(data, args.out)
     if wanted is None or "neff" in wanted:
