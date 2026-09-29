@@ -417,7 +417,7 @@ Note the contrast with the seed-level figures: a standard deviation of 0.004 acr
 
 The interval features assume a supraventricular beat is early relative to its patient's own rhythm. Measured per recording, that holds in some and not others.
 
-**Table 16.** Normalised prematurity by recording, selected.
+**Table 16.** Normalised prematurity by recording, selected; medians from the `wide400` cache. The full list, every recording with at least 20 supraventricular beats, is printed by `python -m analysis.eda_prematurity --table-only`.
 
 | Record | S beats | S share | **S pre-RR / local mean** | N pre-RR / local mean |
 |---|---:|---:|---:|---:|

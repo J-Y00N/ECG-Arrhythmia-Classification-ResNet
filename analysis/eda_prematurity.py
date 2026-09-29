@@ -21,10 +21,13 @@ local mean interval, so 1.0 is that patient's own resting interval. The
 separation sharpens. This is the amplitude/IQR and beat-count/N_eff argument a
 third time: absolute scales carry the patient, ratios carry the beat.
 
-This is a diagnostic, not a representation. The network pools globally over
-time, so the absolute position of a feature is not something it reads; what it
-can read is the separation between two features, which is what the wide-window
-arms supply and what section 4.6 measures.
+This is a diagnostic, not a representation: the network never sees beats
+aligned this way. What the wide-window arms supply is the previous R peak inside
+the window, and section 4.6 measures what that buys.
+
+The same intervals, summarised per recording, give Table 16 of the report
+(``report_by_record``): whether supraventricular beats are early relative to
+their own patient's rhythm, recording by recording.
 
 Built from the ``wide400`` cache, whose 0.8 s reach already contains the
 previous R peak for 98.6% of supraventricular beats.
@@ -33,6 +36,7 @@ Usage
 -----
     python -m analysis.eda_prematurity
     python -m analysis.eda_prematurity --data data --out docs/assets/eda
+    python -m analysis.eda_prematurity --table-only      # Table 16, no figure
 """
 
 from __future__ import annotations
@@ -174,6 +178,45 @@ def report(cache: dict, pre: np.ndarray, local: np.ndarray) -> None:
     print("  second panel plots against.")
 
 
+def report_by_record(cache: dict, pre: np.ndarray, local: np.ndarray, min_s: int = 20) -> None:
+    """Table 16: normalised prematurity of S and N beats, per recording.
+
+    Medians, as in :func:`report`. Recordings with fewer than ``min_s``
+    supraventricular beats are left out: a median over a handful of beats says
+    little about the recording. The S share is over every beat the cache holds
+    for that recording, the unclassifiable ones included.
+    """
+    s_index, n_index = CLASS_SYMBOLS.index("S"), CLASS_SYMBOLS.index("N")
+    ratio = pre / local
+    finite = np.isfinite(ratio)
+
+    rows = []
+    for record in np.unique(cache["record_id"]):
+        in_record = cache["record_id"] == record
+        s_mask = in_record & (cache["y"] == s_index) & finite
+        n_mask = in_record & (cache["y"] == n_index) & finite
+        n_s = int((in_record & (cache["y"] == s_index)).sum())
+        if n_s < min_s:
+            continue
+        rows.append((
+            str(record), n_s, n_s / int(in_record.sum()),
+            float(np.median(ratio[s_mask])) if s_mask.any() else float("nan"),
+            float(np.median(ratio[n_mask])) if n_mask.any() else float("nan"),
+        ))
+    rows.sort(key=lambda row: row[3])
+
+    print("\n" + "=" * 76)
+    print(f"PREMATURITY BY RECORDING, from the {cache['arm']} cache "
+          f"(recordings with at least {min_s} S beats)")
+    print("=" * 76)
+    print(f"  {'record':>7}{'S beats':>9}{'S share':>9}{'S pre-RR / local':>19}{'N pre-RR / local':>19}")
+    print("  " + "-" * 63)
+    for record, n_s, share, s_ratio, n_ratio in rows:
+        print(f"  {record:>7}{n_s:>9,}{share:>9.1%}{s_ratio:>19.3f}{n_ratio:>19.3f}")
+    print("\n  A ratio near 1.0 means the beats are not early for their own patient.")
+    print("  An N ratio far from 1.0 means the local mean is built from ectopic intervals.")
+
+
 def figure(cache: dict, absolute: np.ndarray, normalised: np.ndarray, out: Path) -> None:
     import matplotlib
     matplotlib.use("Agg")
@@ -230,13 +273,18 @@ def main() -> None:
     parser.add_argument("--data", type=Path, default=PROJECT_ROOT / "data")
     parser.add_argument("--arm", default="wide400")
     parser.add_argument("--out", type=Path, default=PROJECT_ROOT / "docs" / "assets" / "eda")
+    parser.add_argument("--min-s", type=int, default=20,
+                        help="smallest supraventricular count for a recording to enter Table 16")
+    parser.add_argument("--table-only", action="store_true", help="print the tables, draw nothing")
     args = parser.parse_args()
 
     cache = load(args.data, args.arm)
     pre, local = interval_table(cache["position"], cache["record_id"])
 
     report(cache, pre, local)
-    figure(cache, reanchor_absolute(cache, pre), reanchor_normalised(cache, pre, local), args.out)
+    report_by_record(cache, pre, local, args.min_s)
+    if not args.table_only:
+        figure(cache, reanchor_absolute(cache, pre), reanchor_normalised(cache, pre, local), args.out)
 
 
 if __name__ == "__main__":

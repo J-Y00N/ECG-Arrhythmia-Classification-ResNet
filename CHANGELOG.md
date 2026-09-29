@@ -7,6 +7,8 @@
 
 ### Fixed
 - Report: Table 11 gave the four-class macro F1 of `wide400` as 0.6070; the artefacts give 0.6073.
+- Table 16 had no code producing it. `analysis.eda_prematurity` now prints it (`report_by_record`); all six rows reproduce, and the report names the source.
+- `analysis.eda_prematurity` docstring still said global pooling discards absolute position, a claim the report had withdrawn.
 - `wide187_rr` was missing from the representation table, so `ECG_REPRESENTATION=wide187_rr` raised although the arm is documented and its runs are stored. Restored.
 - Run directories for the default narrow arm are named without an arm prefix again (`inter-none-lossweight0-seed42`), matching the stored runs, the README, the notebook and `analysis/`.
 - `class_weights` now warns when a class falls below `min_support` and receives zero weight. This happens in every seed-42 inter-patient run, where fusion keeps 42 training beats; the report now says so.

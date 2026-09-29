@@ -118,7 +118,7 @@ analysis/
   baselines.py     1-NN and logistic capacity baselines
   figures.py       every figure in the report
   eda_arms.py      what each representation arm cuts out
-  eda_prematurity.py  beats aligned on the previous R peak
+  eda_prematurity.py  beats aligned on the previous R peak; Table 16
 notebooks/
   walkthrough.ipynb   reproduces the headline numbers from stored artefacts
 docs/
