@@ -1,13 +1,19 @@
 """Capacity baselines: where the protocol gap comes from.
 
-The central result is that separating patients costs about half the macro F1.
+The central result is that separating patients costs over a third of the
+macro F1 (0.963 against 0.592 over N, S and V).
 The explanation offered for it is memorisation -- that a beat-level split lets a
 network recognise the patient rather than the arrhythmia. That explanation makes
 a prediction, and this module tests it.
 
 If the gap is memorisation, it should scale with how much a model *can*
-memorise. Three models spanning that axis are run on identical inputs and
-identical splits:
+memorise. Three models spanning that axis are run on the same inputs and the
+same test half. Two differences from the network remain and are recorded in each
+baseline's ``config.json``: the baselines train on training *and* validation
+beats (neither early-stops), so under ``inter`` they see the validation
+recordings the network held out. The 1-NN reference set is the full training
+set by default; ``--subsample`` restricts it for a quicker draft, which lowers
+the intra-patient score (0.918 at 20,000 beats against 0.948 in full).
 
 **1-nearest neighbour** stores the training set and answers with its closest
 member. It memorises and does nothing else, so it is the upper extreme. Under a
@@ -22,7 +28,7 @@ equal to the penalty, so the capacity axis is a prior-strength axis as well.
 
 **The residual CNN** sits between them and is read from its existing run.
 
-The prediction is that the gap widens with capacity: near-total for 1-NN,
+The prediction is that the gap widens with capacity: largest for 1-NN,
 smallest for the linear model. Neither baseline is offered as a competitor to
 the network; both are instruments for measuring what the network's advantage is
 made of.
@@ -215,7 +221,9 @@ def report(all_results: dict[str, dict[str, dict]]) -> None:
             print(f"    {names[key]:<16}" + "".join(f"{v:>9.3f}" for v in results[key]["f1"]))
 
 
-def save_predictions(results: dict, output_dir: Path, protocol: str) -> None:
+def save_predictions(
+    results: dict, output_dir: Path, protocol: str, settings: dict | None = None
+) -> None:
     for key in ("logistic", "1nn"):
         if key not in results:
             continue
@@ -237,6 +245,7 @@ def save_predictions(results: dict, output_dir: Path, protocol: str) -> None:
                 "accuracy": result["accuracy"],
                 "macro_f1": result["macro4"],
                 "macro_f1_nsv": result["macro3"],
+                **(settings or {}),
             },
             open(directory / "config.json", "w"),
             indent=2,
@@ -255,7 +264,7 @@ def main() -> None:
                         help="repeat for both; defaults to both")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--validation-size", type=float, default=0.20)
-    parser.add_argument("--subsample", type=int, default=20000,
+    parser.add_argument("--subsample", type=int, default=0,
                         help="reference-set size for 1-NN; 0 disables subsampling")
     parser.add_argument("--output-dir", type=Path, default=PROJECT_ROOT / "outputs")
     parser.add_argument("--no-save", action="store_true")
@@ -278,7 +287,15 @@ def main() -> None:
             results["cnn"] = cnn
         all_results[protocol] = results
         if not args.no_save:
-            save_predictions(results, args.output_dir, protocol)
+            save_predictions(
+                results, args.output_dir, protocol,
+                settings={
+                    "seed": args.seed,
+                    "validation_size": args.validation_size,
+                    "validation_folded_into_training": True,
+                    "nn_reference_subsample": subsample,
+                },
+            )
 
     report(all_results)
 

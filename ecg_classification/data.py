@@ -190,24 +190,24 @@ def record_class_distribution(
 
 
 def class_weights(
-    labels: np.ndarray, min_support: int = 50, power: float = 0.5
+    labels: np.ndarray, min_support: int = 50, power: float = 0.0
 ) -> torch.Tensor:
     """Class weights for a weighted loss, raised to ``power``.
 
-    Preferred to oversampling in the inter-patient setting. Minority classes
-    here are concentrated in a handful of recordings -- record 208 supplies
-    about 90% of DS1's fusion beats -- so replicating them does not add patient
-    diversity, it just shows the network one person's morphology many more
-    times. Reweighting the loss achieves the same rebalancing without
-    duplicating anything.
+    Minority classes here are concentrated in a handful of recordings --
+    record 208 supplies about 90% of DS1's fusion beats -- so replicating them
+    does not add patient diversity, it just shows the network one person's
+    morphology many more times. Reweighting the loss rebalances without
+    duplicating anything, although in the runs reported no exponent above zero
+    improved on uniform weights beyond the record-level interval.
 
     ``power`` controls how far the rebalancing goes. At 1.0 the weights are
     plain inverse frequency, which equalises the *total* loss contribution of
-    every class; on this data that means a fusion beat counts as much as
-    ninety-eight normal beats, and training collapses onto the rare classes
-    within a single epoch. At 0.0 the weights are uniform. The default of 0.5
-    compresses the ratio to roughly ten to one, which lifts the minority
-    classes without handing them the objective.
+    every class. When the split keeps fusion in training, a fusion beat counts
+    as much as ninety-eight normal beats and training collapses onto the rare
+    classes within a single epoch; when fusion falls below ``min_support`` the
+    ratio is that of normal to supraventricular and training proceeds. At 0.0, the default, the weights are uniform; 0.5
+    compresses the ratio to roughly ten to one.
 
     The exponent is not a nuisance parameter to tune away. How much
     rebalancing a dataset tolerates is itself a measurement of how badly its
@@ -215,10 +215,12 @@ def class_weights(
     command line and recorded in every run's configuration.
 
     Classes with fewer than ``min_support`` training beats receive zero weight,
-    which removes them from the loss entirely. With four classes this floor
-    should never fire -- the smallest, fusion, holds a few hundred training
-    beats -- and it is kept only as a guard against a validation record split
-    that strips a class almost bare.
+    which removes them from the loss entirely, *at every exponent including
+    zero*. This floor does fire: whenever the inter-patient validation split
+    takes record 208 (seed 42 at a validation size of 0.20), training keeps
+    about forty fusion beats and fusion is dropped from the loss. A warning is
+    printed and the weights are written into ``config.json`` so that this is
+    visible in every run it affects.
     """
     if power < 0.0:
         raise ValueError(f"power must be >= 0, got {power}")
@@ -228,6 +230,14 @@ def class_weights(
     if not eligible.any():
         raise ValueError(
             f"no class reaches min_support={min_support}; counts were {counts.astype(int).tolist()}"
+        )
+
+    dropped = [int(c) for c in np.flatnonzero(~eligible)]
+    if dropped:
+        print(
+            f"Warning: classes {dropped} have fewer than {min_support} training beats "
+            f"(counts {counts.astype(int).tolist()}) and receive zero loss weight; "
+            f"the model is not trained on them."
         )
 
     weights = np.zeros(NUM_CLASSES, dtype=np.float64)
@@ -255,9 +265,8 @@ def scored_classes(labels: np.ndarray, min_support: int = 50) -> list[int]:
 def make_weighted_sampler(labels: np.ndarray) -> WeightedRandomSampler:
     """Create a weighted sampler to reduce class imbalance in training.
 
-    Retained for comparison with the previous pipeline. See
-    :func:`class_weights` for why loss reweighting is the better default under
-    the inter-patient protocol.
+    Retained for comparison with the previous pipeline. Oversampling a class
+    replicates the few recordings supplying it; see :func:`class_weights`.
     """
     counts = np.bincount(labels, minlength=NUM_CLASSES).astype(np.float64)
     counts[counts == 0] = 1.0
@@ -322,7 +331,7 @@ class HeartbeatDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
     channels of equal length. Constant planes waste arithmetic, but they leave
     the training loop, the metrics and the prediction table untouched, and the
     alternative -- a second input argument -- would change every call site for a
-    feature that is off in three of the four arms.
+    feature that is off in three of the five arms.
 
     Augmentation applies to the waveform only. Stretching a beat in time would
     change its apparent rate without changing the interval features that

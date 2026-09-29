@@ -3,7 +3,11 @@
   "representation": "narrow",
   "protocol": "intra",
   "model": "1nn",
-  "accuracy": 0.9814759634485498,
-  "macro_f1": 0.8727373463203572,
-  "macro_f1_nsv": 0.9175930127594247
+  "accuracy": 0.9879817242749305,
+  "macro_f1": 0.9061784043417809,
+  "macro_f1_nsv": 0.9475541117719471,
+  "seed": 42,
+  "validation_size": 0.2,
+  "validation_folded_into_training": true,
+  "nn_reference_subsample": null
 }

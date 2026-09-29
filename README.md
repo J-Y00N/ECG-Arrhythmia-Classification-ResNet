@@ -26,17 +26,17 @@ The intervals are separated by 0.28. Per class the loss is not uniform: normal b
 
 ## What the project found
 
-**Classes are nested inside patients, and that one fact explains the rest.** By inverse Simpson index the effective number of contributing recordings is 21.0 for normal beats and **1.24 for fusion** — one recording supplies 90% of the training half's fusion beats, another 75% of the test half's supraventricular ones. Across four classes the penalty orders inversely with that count.
+**Classes are nested inside patients, and that one fact explains the rest.** By inverse Simpson index the effective number of contributing recordings is 21.0 for normal beats and **1.24 for fusion** — one recording supplies 90% of the training half's fusion beats, another 75% of the test half's supraventricular ones. Across four classes the penalty orders broadly inversely with that count (Spearman −0.8; −1.0 under `wide400`). In seed 42 fusion also received zero loss weight, because that seed's validation split holds record 208; seeds 43 and 44, which train on it, still score fusion at zero.
 
-**The recording is the sampling unit, and beat-level intervals are far too narrow.** Correctness is clustered at an intraclass correlation of 0.35, giving a design effect of 795 and an effective sample size of **62 from 49,660 beats**. On accuracy — the statistic the design-effect formula is derived for — it predicts the interval-width ratio to within 16%.
+**The recording is the sampling unit, and beat-level intervals are far too narrow.** Correctness is clustered at an intraclass correlation of 0.35, giving a design effect of 795 and an effective sample size of **62 from 49,660 beats** in the `wide187` arm (64 from 49,685 in `narrow`). On accuracy — the statistic the design-effect formula is derived for — it predicts the interval-width ratio to within 16%.
 
 **A beat-level split hides the structure that inflates it.** The same intraclass correlation reads **0.013** under that protocol. Measured there, the data look very nearly independent and a beat-level bootstrap looks justified.
 
 **Aggregate calibration hides where the model fails.** Expected calibration error is 0.024 overall and **0.725 on the recording the model handles worst**, where it claims 0.949 confidence at 0.224 accuracy. Low accuracy invites review; misplaced confidence does not.
 
-**Most of what a beat-level split measures is retrievable, not learned.** Storing the training set and returning the nearest neighbour reaches 0.918 against the network's 0.963.
+**Most of what a beat-level split measures is retrievable, not learned.** Storing the training set and returning the nearest neighbour reaches 0.948 against the network's 0.963.
 
-**Consequently nothing could be shown to help.** Five rebalancing strengths, an oversampler, five representation arms, three augmentation modes and three learning rates were compared; none improved on the simplest configuration beyond the record-level interval. Two hypotheses stated in advance were tested and refuted, the second only after two additional seeds.
+**Consequently nothing could be shown to help.** Four loss-weight exponents, an oversampler, five representation arms, three augmentation modes and three learning rates were compared; none improved on the simplest configuration beyond the record-level interval. Two hypotheses stated in advance were tested and refuted, the second only after two additional seeds.
 
 ---
 

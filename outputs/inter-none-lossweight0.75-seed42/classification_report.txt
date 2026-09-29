@@ -1,0 +1,10 @@
+                               precision    recall  f1-score   support
+
+                  Normal beat     0.9672    0.9019    0.9334     44240
+Supraventricular ectopic beat     0.2498    0.6151    0.3553      1837
+     Ventricular ectopic beat     0.7180    0.8714    0.7873      3220
+                  Fusion beat     0.0000    0.0000    0.0000       388
+
+                     accuracy                         0.8823     49685
+                    macro avg     0.4838    0.5971    0.5190     49685
+                 weighted avg     0.9170    0.8823    0.8953     49685

@@ -50,10 +50,10 @@ import os as _os
 #
 # The *model* level is four classes. Once the paced recordings are excluded per
 # AAMI EC57, the Q class holds 15 unclassifiable beats database-wide -- all of
-# them baseline wander or electrode transients. de Chazal et al. (2004) dropped
-# Q for this reason and the inter-patient literature has followed since, so a
-# four-class head is both the honest choice and the one that keeps results
-# comparable with published work.
+# them baseline wander or electrode transients. de Chazal et al. (2004) kept all
+# five AAMI classes; much of the later inter-patient literature drops Q for this
+# reason, and a four-class head follows that practice. ECG_KEEP_Q=1 restores the
+# five-class configuration so the difference can be measured.
 #
 # Indices 0-3 mean the same thing at both levels, so a cache built with the
 # five-class mapping stays valid without rebuilding.
@@ -258,7 +258,7 @@ TARGET_FS = 250
 #: contains exactly one beat and therefore carries morphology without rhythm.
 #:
 #: ``wide187`` reaches 0.80 s either side, at which point the previous R peak is
-#: visible for 98.6% of supraventricular beats against 55.5% of normal ones --
+#: visible for 98.6% of supraventricular beats against 55.4% of normal ones --
 #: the widest separation available -- while beats two cycles back stay under 2%.
 #: Resampling 400 samples onto 187 puts the effective rate at 117 Hz, so the QRS
 #: complex falls from roughly 22 samples to 10 and components above 58.5 Hz are
@@ -267,17 +267,24 @@ TARGET_FS = 250
 #: ``wide400`` holds the same window at full rate. Its only purpose is to say
 #: whether any loss seen in ``wide187`` came from the resampling or from the
 #: wider context diluting the complex.
+#:
 #: ``rr_ratio`` keeps the narrow morphology window and supplies timing as
 #: separate channels instead, every one of them a ratio. Comparing it against
 #: ``narrow`` isolates the contribution of timing, and against ``wide187`` the
 #: contribution of normalising that timing rather than leaving it absolute --
 #: which matters because an absolute interval is a statement about a patient's
 #: resting rate and a ratio is a statement about the beat.
+#:
+#: ``wide187_rr`` holds both at once: the ``wide187`` window plus the interval
+#: features, which is what the window-by-interval interaction in the report
+#: needs. It was dropped from this table by mistake in an earlier commit while
+#: its runs and cache remained in use.
 _REPRESENTATIONS: dict[str, dict] = {
     "narrow":   {"pre": 62,  "post": 125, "input": 187, "rr": False},
     "wide187":  {"pre": 200, "post": 200, "input": 187, "rr": False},
     "wide400":  {"pre": 200, "post": 200, "input": 400, "rr": False},
     "rr_ratio": {"pre": 62,  "post": 125, "input": 187, "rr": True},
+    "wide187_rr": {"pre": 200, "post": 200, "input": 187, "rr": True},
 }
 
 REPRESENTATION = _os.environ.get("ECG_REPRESENTATION", "narrow")
@@ -327,12 +334,12 @@ EFFECTIVE_FS: float = round(SAMPLE_LENGTH / (WINDOW_LENGTH / TARGET_FS), 1)
 # is confounded with resting heart rate. Fusion beats are the clearest case --
 # their median pre-RR of 0.564 s looks premature against 0.768 s for normal
 # beats, but almost all of them come from records 208 and 213, which beat at 103
-# and 108 per minute. Normalised by each record's own rate they sit at 1.0. A
+# and 108 per minute. Normalised by each record's own rate they sit near 1.0. A
 # model given the absolute interval would learn to detect fusion as "a patient
 # whose heart rate is high", which is patient recognition rather than arrhythmia
 # recognition.
 
-#: Interval features supplied to the ``rr_ratio`` arm, in channel order.
+#: Interval features supplied to the arms that use them, in channel order.
 RR_FEATURES: tuple[str, ...] = (
     "pre_rr_ratio",    # pre-RR over the local mean: prematurity
     "post_rr_ratio",   # post-RR over the local mean: the compensatory pause
@@ -353,7 +360,8 @@ MODEL_INTERVAL_FEATURES: int = N_RR_FEATURES if USES_RR else 0
 #: interval feature. The model takes the planes apart again on the way in.
 INPUT_CHANNELS: int = 1 + MODEL_INTERVAL_FEATURES
 
-#: Beats either side used for the local mean RR. Eleven covers roughly eight
+#: Beats in the centred window for the local mean RR (five either side plus the
+#: beat itself). Eleven covers roughly eight
 #: seconds at a normal rate: long enough for one ectopic beat not to move the
 #: reference it is being compared against, short enough to track rate drift.
 RR_LOCAL_WINDOW = 11

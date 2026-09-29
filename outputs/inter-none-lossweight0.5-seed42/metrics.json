@@ -1,0 +1,73 @@
+{
+  "loss": 0.7291547836882615,
+  "accuracy": 0.8688135252088155,
+  "macro_f1": 0.43418308773345493,
+  "label_ranking_average_precision": 0.9266625046730042,
+  "label_ranking_loss": 0.060481030492100234,
+  "coverage_error": 1.1814430914763008,
+  "confusion_matrix": [
+    [
+      39974,
+      2868,
+      1398,
+      0
+    ],
+    [
+      1103,
+      177,
+      557,
+      0
+    ],
+    [
+      192,
+      12,
+      3016,
+      0
+    ],
+    [
+      351,
+      2,
+      35,
+      0
+    ]
+  ],
+  "classification_report": {
+    "Normal beat": {
+      "precision": 0.9604517059106199,
+      "recall": 0.9035714285714286,
+      "f1-score": 0.9311437223386909,
+      "support": 44240.0
+    },
+    "Supraventricular ectopic beat": {
+      "precision": 0.05786204642039882,
+      "recall": 0.09635274904735983,
+      "f1-score": 0.07230392156862746,
+      "support": 1837.0
+    },
+    "Ventricular ectopic beat": {
+      "precision": 0.6024770275669197,
+      "recall": 0.9366459627329192,
+      "f1-score": 0.7332847070265014,
+      "support": 3220.0
+    },
+    "Fusion beat": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1-score": 0.0,
+      "support": 388.0
+    },
+    "accuracy": 0.8688135252088155,
+    "macro avg": {
+      "precision": 0.40519769497448455,
+      "recall": 0.48414253508792693,
+      "f1-score": 0.43418308773345493,
+      "support": 49685.0
+    },
+    "weighted avg": {
+      "precision": 0.896380237043888,
+      "recall": 0.8688135252088155,
+      "f1-score": 0.8792955084393799,
+      "support": 49685.0
+    }
+  }
+}

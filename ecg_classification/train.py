@@ -118,9 +118,18 @@ class TrainConfig:
         # as an argument, so it has to reach the directory name from there too:
         # without it two arms trained on the same protocol and seed would write
         # to the same place and the second would silently replace the first.
+        #
+        # The default four-class narrow arm carries no prefix. That is the name
+        # every stored run, the README, the notebook and ``analysis/`` refer to
+        # (``inter-none-lossweight0-seed42``); prefixing it would send a
+        # reproduction to a directory nothing downstream reads.
         classes = "5" if KEEP_OBSERVATION else ""
+        prefix = (
+            "" if REPRESENTATION == "narrow" and not KEEP_OBSERVATION
+            else f"{REPRESENTATION}{classes}-"
+        )
         return (
-            f"{REPRESENTATION}{classes}-{self.protocol}{strict}-{self.augmentation_mode}"
+            f"{prefix}{self.protocol}{strict}-{self.augmentation_mode}"
             f"-{rebalancing}{stopping}-seed{self.seed}"
         )
 
@@ -153,9 +162,9 @@ def macro_f1_from_confusion(matrix: np.ndarray, class_indices: list[int]) -> flo
     """Macro F1 restricted to the given classes, computed from a confusion matrix.
 
     Model selection needs this because the validation half of the inter-patient
-    protocol is only two recordings, and minority classes in this database sit
-    in a handful of recordings. A validation split can therefore contain no
-    fusion beats at all, in which case an unrestricted macro average scores an
+    protocol is only four recordings at the default validation size, and
+    minority classes in this database sit in a handful of recordings. A
+    validation split can therefore contain no fusion beats at all, in which case an unrestricted macro average scores an
     absent class as zero and drags the metric down by a quarter every epoch.
     The offset is constant, so the ranking of epochs survives, but the number
     reported alongside it would be meaningless.
@@ -632,8 +641,8 @@ def parse_args() -> TrainConfig:
         default=defaults.weight_power,
         help=(
             "Exponent on the inverse-frequency class weights. 0 is uniform, 1 is plain "
-            "inverse frequency. On this data 1 collapses training onto the rare classes, "
-            "so how much rebalancing is tolerable is itself worth measuring."
+            "inverse frequency. When fusion stays in training, 1 collapses training onto "
+            "the rare classes, so how much rebalancing is tolerable is itself worth measuring."
         ),
     )
     parser.add_argument(

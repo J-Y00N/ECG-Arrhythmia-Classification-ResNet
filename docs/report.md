@@ -8,11 +8,11 @@ That patient-level evaluation is harder than beat-level evaluation has been know
 
 An earlier version of this project used a preprocessed CSV release of MIT-BIH and reported 0.9746 accuracy. That file discards record identifiers and splits at the beat level, so patient-level evaluation is not merely absent but impossible. The pipeline was rebuilt from the raw records, reproducing the published DS1/DS2 class counts to within 39 beats in 100,733.
 
-Separating patients costs over a third of the macro F1 — 0.592 against 0.963 over the three scoreable classes, with cluster bootstrap intervals that do not overlap. The loss is not uniform: normal beats lose 0.03 and ventricular 0.17, while supraventricular and fusion fall to zero. Minority classes are nested inside a handful of recordings — the effective number of contributing records, by inverse Simpson index, is 21.0 for normal beats and 1.24 for fusion — and the per-class penalty orders inversely with that count.
+Separating patients costs over a third of the macro F1 — 0.592 against 0.963 over the three scoreable classes, with cluster bootstrap intervals that do not overlap. The loss is not uniform: normal beats lose 0.03 and ventricular 0.17, while supraventricular and fusion fall to zero. Minority classes are nested inside a handful of recordings — the effective number of contributing records, by inverse Simpson index, is 21.0 for normal beats and 1.24 for fusion — and the per-class penalty orders broadly inversely with that count (Spearman −0.8).
 
-Three findings concern measurement. Beats are clustered within recordings at an intraclass correlation of 0.35, giving a design effect of 795 and an effective sample size of 62 from 49,660 beats; beat-level intervals are 24 times too narrow on accuracy, a factor the design effect predicts to within 16%. A beat-level split hides the structure that inflates it, the same correlation reading 0.013 under that protocol. And aggregate calibration hides where the model fails: an expected calibration error of 0.024 overall against 0.725 on the recording handled worst, where the model claims 0.949 confidence at 0.224 accuracy.
+Three findings concern measurement. Beats are clustered within recordings at an intraclass correlation of 0.35, giving (in the `wide187` arm) a design effect of 795 and an effective sample size of 62 from 49,660 beats; beat-level intervals are 24 times too narrow on accuracy, a factor the design effect predicts to within 16%. A beat-level split hides the structure that inflates it, the same correlation reading 0.013 under that protocol. And aggregate calibration hides where the model fails: an expected calibration error of 0.024 overall against 0.725 on the recording handled worst, where the model claims 0.949 confidence at 0.224 accuracy.
 
-Consequently no intervention could be shown to help. Five rebalancing strengths, an oversampler, five representation arms and three learning rates were compared; none improved on the simplest configuration beyond the record-level interval, and two hypotheses stated in advance were refuted. Twenty-two recordings are not enough to distinguish these interventions, and the interval that shows this is the one that shows the protocol gap to be real.
+Consequently no intervention could be shown to help. Four loss-weight exponents, an oversampler, five representation arms and three learning rates were compared; none improved on the simplest configuration beyond the record-level interval, and two hypotheses stated in advance were refuted. Twenty-two recordings are not enough to distinguish these interventions, and the interval that shows this is the one that shows the protocol gap to be real.
 
 **Keywords:** ECG classification, MIT-BIH, inter-patient evaluation, cluster bootstrap, design effect, class-patient nesting, AAMI EC57
 
@@ -113,7 +113,7 @@ Under the inter-patient protocol the fusion task is *learn from one patient, gen
 
 | Protocol | Construction |
 |---|---|
-| **inter** | de Chazal partition [2]: DS1 (22 records) train, DS2 (22) test; the validation half carved out of DS1 **by record** |
+| **inter** | de Chazal partition [2]: DS2 (22 records) test; DS1 (22) split **by record** into 18 training and 4 validation recordings (validation size 0.20) |
 | **intra** | all beats pooled, class-stratified 80:20 at the beat level |
 
 Validation is split by record under `inter` because holding out beats from recordings the model also trains on would reintroduce, at model selection, the leakage the protocol exists to remove. de Chazal et al. likewise separated selection from assessment, using DS1 to choose among twelve configurations; a network trained by gradient descent additionally needs a held-out set during training, so DS1 is divided again. In both arrangements DS2 is untouched until the end.
@@ -144,7 +144,7 @@ Four interval features are supplied, all dimensionless: preceding and following 
 
 A 1D residual CNN. The stem maps one input channel to 32 with a kernel-5 convolution, batch normalisation and ReLU. Five residual blocks follow, each two kernel-5 convolutions with batch normalisation, a skip addition, ReLU, a kernel-5 stride-2 max pool and dropout at 0.10. Global average pooling reduces the sequence to one value per channel, and a two-layer head maps 32 to 64 to the logits with ReLU and dropout at 0.20. **54,788 trainable parameters.** The design follows Kachuee et al. [1], retaining the modifications made in the earlier version of this project.
 
-The pooling bears on §4.6: global average pooling discards *where* a feature occurred, so the network reads the separation between two features but not the absolute position of one.
+The pooling bears on §4.6, though less than it might seem. For a 187-sample input the trunk ends at two positions, each with a receptive field of 377 samples, and the convolutions are zero-padded; global average pooling over two positions therefore does not remove absolute position, which the network can recover from the input boundaries. The claim that it reads only the separation between features is not supported.
 
 **No layer, kernel size or channel count was changed in this study.** The convolutional trunk is byte-identical across every arm; in the interval arms only the head's first layer widens, from 32 inputs to 36.
 
@@ -170,11 +170,15 @@ and $w_c \propto \pi_c^{-\beta}$ gives $\tilde{\pi}_c \propto \pi_c^{1-\beta}$. 
 
 Model selection is fixed to N, S and V. Fusion cannot support it: a validation split either takes record 208 — leaving training with about forty fusion beats — or it does not, leaving validation with almost none. Selection is restricted; reporting is not.
 
+**Fusion is not trained on in every seed-42 inter-patient run.** Classes with fewer than 50 training beats receive zero loss weight at every $\beta$. Seed 42 places records 122, 208, 209 and 230 in validation, leaving 42 fusion beats in training, so fusion's weight is zero in every seed-42 `inter` run, the headline included (`class_weights` in each `config.json`). Its fusion F1 of 0.000 is therefore fixed by the loss rather than by nesting alone. Seeds 43 and 44 keep record 208 in training at full weight and still score fusion at 0.001 and 0.000, so the conclusion survives; the seed-42 figure does not by itself show it.
+
+Training uses AdamW (learning rate 1e-3, weight decay 1e-4), batch size 256, cross-entropy with label smoothing 0.05, and a learning rate halved when validation macro F1 fails to improve for two epochs. "Unweighted" below means uniform class weights with that smoothing. Label smoothing bears on the calibration results of §4.9.
+
 ### 3.4 Capacity baselines and matrix
 
-Two models bracket the network on identical inputs and splits. **1-nearest neighbour** stores the training set and answers with its closest member: it memorises and does nothing else. **L2-regularised multinomial logistic regression** fits one linear boundary per class and has almost no capacity to memorise. Neither is a competitor; both are instruments for measuring what the network's advantage is made of.
+Two models bracket the network on the same inputs and test half. They train on the training and validation beats together, since neither early-stops — under `inter`, seed 42, that includes records 208 and 209, which the network held out — and the 1-NN reference set is the full training set. **1-nearest neighbour** stores the training set and answers with its closest member: it memorises and does nothing else. **L2-regularised multinomial logistic regression** fits one linear boundary per class and has almost no capacity to memorise. Neither is a competitor; both are instruments for measuring what the network's advantage is made of.
 
-`narrow` carries the full matrix: 3 augmentation modes × 2 protocols × 3 seeds, $\beta = 0$, a 100-epoch budget with early stopping at patience 15. `wide187` and `wide400` add 2 protocols × 3 seeds, the oversampler 3 seeds under `inter`, and `rr_ratio` and `wide187_rr` one seed each. No run stopped at the epoch limit.
+`narrow` carries the full matrix: 3 augmentation modes × 2 protocols × 3 seeds, $\beta = 0$, a 100-epoch budget with early stopping at patience 15. `wide187` adds 2 protocols × 3 seeds and `wide400` 3 seeds under `inter` and one under `intra`, the oversampler 3 seeds under `inter`, and `rr_ratio` and `wide187_rr` one seed each. No run stopped at the epoch limit.
 
 ### 3.5 Uncertainty
 
@@ -225,16 +229,16 @@ The intervals are separated by 0.28. Over three seeds the four-class figures are
 
 ### 4.2 The recording is the sampling unit
 
-Under `inter`, correctness is clustered at $\rho = 0.352$ with 2,257 beats per recording, giving $D_{\text{eff}} = 795$ and $n_{\text{eff}} = 62$ from 49,660 beats. Fifty thousand beats carry the information of sixty-two independent observations.
+Under `inter` in the `wide187` arm (seed 42; the narrow-arm figures are those of Table 6), correctness is clustered at $\rho = 0.352$ with 2,257 beats per recording, giving $D_{\text{eff}} = 795$ and $n_{\text{eff}} = 62$ from 49,660 beats. Fifty thousand beats carry the information of sixty-two independent observations.
 
-**Table 7.** Interval widths under the two resampling units.
+**Table 7.** Interval widths under the two resampling units, `wide187`, `inter`, seed 42.
 
 | Statistic | beat bootstrap | cluster bootstrap | ratio | $\sqrt{D_{\text{eff}}}$ |
 |---|---:|---:|---:|---:|
 | **accuracy** | 0.00457 | 0.11097 | **24.27** | **28.20** |
 | macro F1 (N/S/V) | 0.0110 | 0.1761 | 16.04 | 28.20 |
 
-The design-effect relation is derived for a mean, and accuracy is a mean: there prediction and observation agree to within 16%. Applied to macro F1 — a ratio of ratios, outside the derivation — it misses by 76%. The validation is the accuracy row; the macro F1 ratio is descriptive. The formula is a first-order approximation that assumes equal group sizes, which these are not (1,517 to 3,361 beats), so agreement to within 16% is the check rather than exact equality.
+The design-effect relation is derived for a mean, and accuracy is a mean: there prediction and observation agree to within 16%. Applied to macro F1 — a ratio of ratios, outside the derivation — it misses by 76%. The validation is the accuracy row; the macro F1 ratio is descriptive. The formula is a first-order approximation that assumes equal group sizes, which these are not (1,517 to 3,247 beats), so agreement to within 16% is the check rather than exact equality.
 
 **This establishes the resampling unit, not the size of the gap**, which is established in §4.1 and survives it.
 
@@ -257,6 +261,8 @@ The design-effect relation is derived for a mean, and accuracy is a mean: there 
 
 Spearman rank correlation between $N_{\text{eff}}$ and penalty is −0.800, and −1.000 under `wide400`. Four points cannot support a p-value; the ordering is the observation.
 
+$N_{\text{eff}}$ here is computed over all 22 DS1 recordings, which describes the training half rather than the 18 recordings a given seed trains on. Seed 42 holds out records 208 and 209, so its model trained on 42 fusion beats ($N_{\text{eff}}$ 4.74, zero loss weight; §3.3) and 559 supraventricular beats ($N_{\text{eff}}$ 5.97). Seeds 43 and 44 train on $N_{\text{eff}}$ of 1.20 and 1.15 for fusion.
+
 Two mechanisms produce it. Ventricular beats survive on morphology, having a wide QRS that does not depend on knowing the patient. Supraventricular beats do not: their QRS is normal and they are defined by prematurity, which is why the literature treats them as the class that **requires rhythm as context** [11]. With timing absent from this representation only patient-specific morphology remains — which a beat-level split supplies and a record-level split does not. Fusion beats fail on both counts.
 
 <p align="center">
@@ -267,7 +273,7 @@ Two mechanisms produce it. Ventricular beats survive on morphology, having a wid
 
 ### 4.4 Where the penalty sits
 
-Accuracy across the 22 test recordings has a median of 0.977 and a range from 0.224 to 1.000; six exceed 0.99. **Three carry 67% of all errors.**
+Accuracy across the 22 test recordings has a median of 0.977 and a range from 0.224 to 1.000; eight exceed 0.99. **Three carry 67% of all errors.**
 
 **Table 9.** The three weakest test recordings.
 
@@ -287,15 +293,15 @@ The penalty is not a uniform limit of the model but failure on particular patien
 
 ### 4.5 Capacity
 
-**Table 10.** Three models, identical inputs and splits, macro F1 over N/S/V.
+**Table 10.** Three models, same inputs and test half (baselines as described in §3.4), macro F1 over N/S/V.
 
 | Model | capacity | intra | inter | gap | $\rho$ (inter) |
 |---|---|---:|---:|---:|---:|
-| **1-NN** | memorisation only | 0.9176 | 0.5219 | **0.396** | **0.418** |
+| **1-NN** | memorisation only | 0.9476 | 0.5130 | **0.435** | **0.358** |
 | residual CNN | convolutional | 0.9632 | 0.5924 | 0.371 | 0.346 |
-| logistic | linear | 0.6872 | 0.4727 | **0.215** | 0.293 |
+| logistic | linear | 0.6872 | 0.4727 | **0.215** | 0.298 |
 
-The gap orders with capacity, the linear model's at 0.215 against the network's 0.371. The sharper observation is in the intra column: **storing the training set and returning its nearest member reaches 0.918 against the network's 0.963.** Most of what a beat-level split measures is retrievable similarity rather than learned pattern, because the nearest neighbour of a test beat is generally another beat from the same recording. Intraclass correlation orders the same way: the model that only memorises has the highest.
+The gap orders with capacity, the linear model's at 0.215 against the network's 0.371. The sharper observation is in the intra column: **storing the training set and returning its nearest member reaches 0.948 against the network's 0.963.** Most of what a beat-level split measures is retrievable similarity rather than learned pattern, because the nearest neighbour of a test beat is generally another beat from the same recording. Intraclass correlation orders the same way, though narrowly: 0.358 for the model that only memorises against the network's 0.346. An earlier version of this table used a 20,000-beat reference set for 1-NN, which put its intra score at 0.918 and its correlation at 0.418.
 
 <p align="center">
   <img src="assets/result/result_capacity.png" alt="Figure 7" width="660">
@@ -328,7 +334,7 @@ $$
 
 **The interaction is negative: the two sources of timing are redundant.** Adding intervals to the wider window buys 0.0015 over the window alone.
 
-The per-class view shows substitution rather than plateau. Across the four grid arms the two ectopic F1 scores sum to 0.813, 0.985, 0.925 and 0.988 — the split moves freely while the total does not. Prematurity is a property both share, at normalised ratios of 0.763 and 0.733 (§4.11), so a network handed timing learns that a beat is ectopic without learning which kind, and assigns it to whichever is four times more common in training.
+The per-class view shows substitution rather than plateau. Across the four grid arms the two ectopic F1 scores sum to 0.813, 0.985, 0.925 and 0.988 — the split moves freely while the total does not. Prematurity is a property both share, at normalised ratios of 0.754 and 0.710 (§4.11), so a network handed timing learns that a beat is ectopic without learning which kind, and assigns it to whichever is four times more common in training.
 
 **`wide400` is the exception at 1.459, and does not survive its seeds.** Supraventricular F1 reads 0.641, 0.071 and 0.075 across three; the arm's standard deviation is 25 times `wide187`'s. In the seed that succeeded, record 232 — 75% of DS2's supraventricular beats — was classified at 0.889 against 0.000 elsewhere.
 
@@ -342,16 +348,18 @@ For scale, de Chazal et al. report a supraventricular sensitivity of 75.9% at a 
 
 ### 4.7 Rebalancing
 
-**Table 12.** Loss-weight exponent sweep, `inter`, seed 42.
+**Table 12.** Loss-weight exponent sweep, `inter`, `narrow`, seed 42, on the split used everywhere else (validation records 122, 208, 209, 230). Fusion has 42 training beats and zero weight at every $\beta$ (§3.3), so the weight ratio is that of normal to supraventricular. Train accuracy is at the selected epoch; the last column is the paired cluster-bootstrap difference from $\beta = 0$ in macro F1 over N/S/V.
 
-| $\beta$ | weight ratio | train acc | macro F1 (4-class) |
-|---:|---:|---:|---:|
-| 0 | 1.0 | 0.977 | **0.450** |
-| 0.5 | 9.9 | 0.971 | 0.449 |
-| 0.75 | 31.3 | 0.884 | 0.391 |
-| **1.0** | **98.4** | **0.118** | **0.220** |
+| $\beta$ | weight ratio | best epoch | train acc | macro F1 (4-class) | macro F1 (N/S/V) | difference, 95% CI |
+|---:|---:|---:|---:|---:|---:|---|
+| 0 | 1.0 | 1 | 0.934 | 0.444 | 0.592 | — |
+| 0.5 | 8.1 | 17 | 0.993 | 0.434 | 0.579 | −0.005 [−0.112, +0.104] |
+| 0.75 | 23.2 | 15 | 0.986 | **0.519** | **0.692** | +0.086 [−0.056, +0.231] |
+| 1.0 | 66.0 | 12 | 0.857 | 0.436 | 0.581 | −0.018 [−0.122, +0.089] |
 
-At $\beta = 1$ — plain inverse frequency — training collapses within an epoch. Equalising each class's total loss contribution means 414 fusion beats carry the weight of 40,753 normal ones, and since those 414 come from essentially one patient the network cannot learn to discriminate them; predicting the rare classes indiscriminately becomes the faster way to reduce the weighted loss. No exponent improves on zero. **How much rebalancing a dataset tolerates is itself a measurement of how deeply its classes are nested.**
+Every interval contains zero. $\beta = 0.75$ scores highest, on the strength of supraventricular F1 rising to 0.355, but that class's own interval runs from 0.023 to 0.664 and the result rests on one seed. No exponent can be shown to improve on zero.
+
+Whether inverse frequency is tolerated depends on which recordings the split leaves in training. Here fusion is out of the loss and $\beta = 1$ trains normally, reaching 0.93 training accuracy. An earlier sweep at a validation size of 0.10 (validation records 122 and 209; not among the stored artefacts) kept all 414 of DS1's fusion beats in training, nearly all from record 208, at 98 times the weight of a normal beat. There training collapsed within an epoch — 0.118 training accuracy and a four-class macro F1 of 0.220 — because a class supplied by one patient cannot be discriminated, and predicting it indiscriminately became the faster way to reduce the weighted loss. **How much rebalancing a dataset tolerates is itself a measurement of how deeply its classes are nested.**
 
 ### 4.8 Two refuted hypotheses
 
@@ -380,7 +388,7 @@ Aggregate calibration under `inter` looks unremarkable: mean confidence 0.9343 a
 | 213 | 3,250 | 0.952 | 0.826 | +0.127 | 0.127 |
 | 231 | 1,570 | 0.788 | 0.951 | −0.163 | 0.163 |
 
-**The model is most confident where it is least right.** Twenty of the twenty-two recordings are mildly underconfident; record 232 is overconfident by 0.725 and holds 3.6% of the beats, so the aggregate absorbs it entirely.
+**The model is most confident where it is least right.** Seventeen of the twenty-two recordings are underconfident and five overconfident; record 232 is overconfident by 0.725 and holds 3.6% of the beats, so the aggregate absorbs it entirely.
 
 This matters for a specific reason. In automated Holter analysis, confidence is what routes a beat to human review: low-confidence beats are flagged and high-confidence beats pass through. Record 232 passes through at 0.949 while being right 22% of the time. **The failure is not that the classifier is wrong on this patient but that nothing downstream is told to doubt it.**
 
@@ -403,7 +411,7 @@ The 15 unclassifiable beats, never seen in training, were answered as normal ten
 
 Every one contains zero. The supraventricular interval under `wide400` runs from 0.097 to 0.827 — a width of 0.73 against a point estimate of 0.641 — because record 232 supplies 75% of that class in DS2 and is absent from 37% of resamples. The point estimate reports that one patient was classified correctly.
 
-Note the contrast with the seed-level figures: a standard deviation of 0.004 across seeds in the `wide187` arm against a record-level interval width of 0.171 in the same arm. Seed variation measures whether the optimisation is reproducible; record variation measures whether the result is about the model or about which patients were evaluated. **The second is forty times the first, and the convention of reporting several seeds addresses only the first.**
+Note the contrast with the seed-level figures: a standard deviation of 0.004 across seeds in the `wide187` arm against a record-level interval width of 0.176 in the same arm, which corresponds to a standard deviation of about 0.045. Seed variation here measures the optimisation together with the choice of validation recordings, since the seed also draws the validation split; record variation measures whether the result is about the model or about which patients were evaluated. **The second is about twelve times the first, and the convention of reporting several seeds addresses only the first.**
 
 ### 4.11 The supraventricular class is not homogeneous in timing
 
@@ -436,7 +444,7 @@ Class imbalance and patient heterogeneity are usually treated as separate proble
 
 ### 5.2 The structure inflates performance
 
-Separating patients costs 0.485 in macro F1 and the intervals do not overlap. The mechanism is visible in the capacity axis — a nearest-neighbour classifier reaches 0.918 under a beat-level split against the network's 0.963 — and again in the optimisation trace, where the inter-patient runs peak at epoch 9 and the intra-patient runs continue improving past 40. Continuing to fit the training recordings is rewarded when those recordings also furnish the test beats, and paid for when they do not.
+Separating patients costs 0.485 in four-class macro F1 over three seeds, and on the three scoreable classes the seed-42 intervals do not overlap. The mechanism is visible in the capacity axis — a nearest-neighbour classifier reaches 0.948 under a beat-level split against the network's 0.963 — and again in the optimisation trace, where the inter-patient runs peak at epoch 9 on average and the intra-patient runs at epoch 37. Continuing to fit the training recordings is rewarded when those recordings also furnish the test beats, and paid for when they do not.
 
 ### 5.3 The structure conceals itself
 
@@ -448,13 +456,13 @@ This is the finding least likely to be noticed from inside a beat-level evaluati
 | **The uncertainty** | — | beat-level intervals 24× too narrow on accuracy |
 | **The failure** | — | aggregate ECE 0.024, worst recording 0.725 |
 
-Measured in the first setting, a beat-level bootstrap looks justified. The aggregate averages over patients and no patient experiences an average. **Each level, alone, licenses the conclusion that nothing is wrong.**
+Measured in the first setting, a beat-level bootstrap looks justified — though even there the cluster interval on macro F1 is 5.3 times the beat-level one, against 2.6 predicted from the accuracy-based design effect. The aggregate averages over patients and no patient experiences an average. **Each level, alone, licenses the conclusion that nothing is wrong.**
 
 ### 5.4 The structure resists correction
 
-Five rebalancing strengths, an oversampler, five representation arms, three augmentation modes and three learning rates were tried. None improved on the simplest configuration by more than the noise, and two — inverse-frequency weighting, and the combination of the strongest representation with the strongest procedure — made things substantially worse.
+Four loss-weight exponents, an oversampler, five representation arms, three augmentation modes and three learning rates were tried. None improved on the simplest configuration by more than the noise. Inverse-frequency weighting collapsed training on a split that kept fusion in the loss, and the combination of the strongest representation with the strongest procedure made things substantially worse.
 
-The representation result is the most informative. Prematurity is shared between the two ectopic classes at 0.763 and 0.733 of the local mean, so timing identifies that a beat is ectopic without identifying which kind. Every arm therefore trades one class against the other, the sum of their F1 scores confined between 0.81 and 0.99 in the four arms that replicate. §4.11 adds that the class is not even homogeneous in the property the feature was built on.
+The representation result is the most informative. Prematurity is shared between the two ectopic classes at 0.754 and 0.710 of the local mean, so timing identifies that a beat is ectopic without identifying which kind. Every arm therefore trades one class against the other, the sum of their F1 scores confined between 0.81 and 0.99 in the four arms that replicate. §4.11 adds that the class is not even homogeneous in the property the feature was built on.
 
 ### 5.5 The structure prevents verification
 
@@ -477,7 +485,7 @@ Four axes of this project independently reached the same conclusion.
 
 The fourth row is where the principle bites: a window of fixed duration carries timing only on an absolute scale, because how many neighbouring beats fall inside it is the patient's resting rate. There is no way to normalise a window.
 
-Fusion beats show what the absolute scale costs. They look premature — a median preceding interval of 0.564 s against 0.768 s for normal beats — but normalised they sit at 0.983. Records 208 and 213 supply almost all of them and run at 103 and 108 beats per minute against 75 and 69 for typical records. **The fusion beats are not early; the patients who have them are fast.** A model given absolute timing would learn to detect fusion as *a patient whose heart rate is high*, and would appear to transfer from DS1 to DS2 only because those two recordings share the trait.
+Fusion beats show what the absolute scale costs. They look premature — a median preceding interval of 0.564 s against 0.768 s for normal beats — but normalised they sit at 0.985. Records 208 and 213 supply almost all of them and run at 103 and 108 beats per minute against 75 and 69 for typical records. **The fusion beats are not early; the patients who have them are fast.** A model given absolute timing would learn to detect fusion as *a patient whose heart rate is high*, and would appear to transfer from DS1 to DS2 only because those two recordings share the trait.
 
 There is a limit to it, marked by §4.11: normalising by a local mean assumes what is normalised away is nuisance rather than pathology. **Ratios are patient-invariant when the patient's baseline is a baseline.**
 
@@ -487,7 +495,7 @@ A distinction worth drawing explicitly, because the rest of this report invites 
 
 This study measures two **evaluation protocols**, not two model qualities. The intra-patient figure is inflated as an estimate of performance on a new patient. It is not inflated as an estimate of performance on a patient the model has already seen some of, which is a different and legitimate question.
 
-Nor does the comparison establish which model is better. The intra-patient model trains on twice as many recordings, and by §5.1 that is the axis along which training data actually helps; on a third database it might well win. This study cannot say, because the intra-patient model has no unseen patients left in MIT-BIH — the same fact that makes its reported figure uninformative about generalisation.
+Nor does the comparison establish which model is better. The intra-patient model trains on beats from all 44 recordings against 18, and by §5.1 that is the axis along which training data actually helps; on a third database it might well win. This study cannot say, because the intra-patient model has no unseen patients left in MIT-BIH — the same fact that makes its reported figure uninformative about generalisation.
 
 The productive reading is not that beat-level evaluation is wrong but that it answers a question about adaptation while being reported as though it answered one about generalisation. Patient-adaptive classifiers are an established line of work: de Chazal and Reilly proposed one in 2006, where an expert corrects a fraction of an incoming recording's beats and a local classifier is trained on them [3]. The capacity result is encouraging for that design — if most of what a beat-level split measures is retrievable similarity, then a little data from the patient in front of you goes a long way. **A Holter monitor is attached to one person; adapting to that person is the design goal, not a form of cheating. What this study shows is that the number such a system reports must be labelled for what it is.**
 
@@ -501,7 +509,7 @@ Three kinds, and conflating them would misrepresent the work.
 
 **Properties of the modality, not losses.** A single-lead recording is one potential against time. It contains no spatial or inter-lead phase information, and none was discarded here; obtaining it would require a multi-lead recording. This is stated because the first two categories are easy to read as evidence that a richer signal was thrown away.
 
-Two further caveats. Three of the five representation arms rest on one seed each, and the `wide400` result shows what one seed can hide. And uncertainty from training and from evaluation are measured separately rather than combined; since the seed-level standard deviation is forty times smaller than the record-level interval, combining them would not change any conclusion, but the intervals reported are evaluation-only.
+Further caveats. The cluster bootstrap resamples 22 recordings with percentile intervals, and with this few clusters its coverage may fall short of nominal; for classes concentrated in one recording the interval degenerates. Two of the five representation arms rest on one seed each, and the `wide400` result shows what one seed can hide. And uncertainty from training and from evaluation are measured separately rather than combined; since the seed-level standard deviation is about twelve times smaller than the record-level one, combining them would not change any conclusion, but the intervals reported are evaluation-only.
 
 ---
 
@@ -531,7 +539,7 @@ Code and artefacts are preserved at the git tag `v0.1.0-csv`.
 
 ## Appendix B. Secondary checks
 
-**Two augmentation defects.** The augmenter clipped its output to [0, 1], correct while beats were min-max normalised inside a ten-second window. Under the present normalisation beats span roughly −14 to +14, and that clip saturated 9.5% of samples, flattening every R peak and S trough — removing the QRS complex from precisely the minority-class copies the augmentation existed to produce. Separately, time stretching moved the R peak by up to 19 samples, with a systematic bias of −3.4 on ventricular beats, undoing the alignment the segmentation was designed to guarantee. Both are fixed: the stretch re-cuts the window around the peak's new position, and the clip is disabled.
+**Two augmentation defects.** The augmenter clipped its output to [0, 1], correct while beats were min-max normalised inside a ten-second window. Under the present normalisation beats span roughly −2.7 to +7.4 between the 1st and 99th percentiles, with extremes near ±22, and 62% of samples lie outside [0, 1]; that clip flattened every R peak and S trough — removing the QRS complex from precisely the minority-class copies the augmentation existed to produce. Separately, time stretching moved the R peak by up to 19 samples, with a systematic bias of −3.4 on ventricular beats, undoing the alignment the segmentation was designed to guarantee. Both are fixed: the stretch re-cuts the window around the peak's new position, and the clip is disabled.
 
 **Learning rate.** The inter-patient runs peak early — a mean best epoch of 8.9 against 36.7 for intra-patient — which invites the objection that they are undertrained.
 

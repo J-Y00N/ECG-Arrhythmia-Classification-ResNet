@@ -2,8 +2,8 @@
 
 Every figure so far centres the current R peak, which is what the pipeline feeds
 the network. That alignment makes supraventricular and normal beats look almost
-identical, and the report says so in numbers -- normalised prematurity of 0.763
-against 1.028 -- without ever showing it.
+identical, and the report says so in numbers -- normalised prematurity of 0.754
+against 1.003 -- without ever showing it.
 
 Re-anchoring on the preceding R peak shows it directly. The current beat's QRS
 then lands at a distance equal to its preceding interval, so a premature beat

@@ -426,7 +426,7 @@ def load_predictions(run_dir: Path) -> pd.DataFrame:
     return frame
 
 
-def report_run(run_dir: Path, reps: int, rng: np.random.Generator) -> None:
+def report_run(run_dir: Path, reps: int, rng: np.random.Generator, seed: int = 0) -> None:
     frame = load_predictions(run_dir)
     y_true = frame["y_true"].to_numpy()
     y_pred = frame["y_pred"].to_numpy()
@@ -473,7 +473,30 @@ def report_run(run_dir: Path, reps: int, rng: np.random.Generator) -> None:
     ratio_text = "undefined" if np.isnan(observed_ratio) else f"{observed_ratio:.2f}"
     print(f"  observed width ratio            {ratio_text}"
           f"   (predicted {np.sqrt(stats['design_effect']):.2f})")
-    print("  The prediction is first-order: Deff assumes equal group sizes and a")
+    # Accuracy is a mean of per-beat correctness, which is the statistic the
+    # design-effect relation is derived for. This row is the check; the macro F1
+    # ratio above is descriptive (report, Table 7). It draws from its own
+    # generator so that adding it leaves the stream the rest of this script
+    # uses -- and so every earlier interval and paired comparison -- unchanged.
+    acc_rng = np.random.default_rng(seed)
+    correct = (y_true == y_pred).astype(np.float64)
+    labels, per_group = _group_indices(groups)
+    cluster_acc = np.empty(reps)
+    naive_acc = np.empty(reps)
+    for rep in range(reps):
+        drawn = acc_rng.integers(0, len(labels), size=len(labels))
+        cluster_acc[rep] = correct[np.concatenate([per_group[g] for g in drawn])].mean()
+        naive_acc[rep] = correct[acc_rng.integers(0, len(correct), size=len(correct))].mean()
+    ca_low, ca_high = percentile_interval(cluster_acc)
+    na_acc_low, na_acc_high = percentile_interval(naive_acc)
+    acc_ratio = (ca_high - ca_low) / (na_acc_high - na_acc_low)
+    print(f"\nACCURACY  point {correct.mean():.4f}")
+    print(f"  beat bootstrap width {na_acc_high - na_acc_low:.5f}   "
+          f"cluster bootstrap width {ca_high - ca_low:.5f}")
+    print(f"  observed width ratio            {acc_ratio:.2f}"
+          f"   (predicted {np.sqrt(stats['design_effect']):.2f})")
+
+    print("\n  The prediction is first-order: Deff assumes equal group sizes and a")
     print("  linear statistic, and macro F1 is neither. Agreement to within a")
     print("  fraction is the check; exact equality is not expected.")
 
@@ -544,7 +567,7 @@ def main() -> None:
     args = parser.parse_args()
 
     rng = np.random.default_rng(args.seed)
-    report_run(args.run, args.reps, rng)
+    report_run(args.run, args.reps, rng, seed=args.seed)
     if args.compare is not None:
         report_comparison(args.run, args.compare, args.reps, rng)
 
