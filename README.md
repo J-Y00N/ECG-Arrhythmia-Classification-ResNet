@@ -9,6 +9,11 @@ A 1D residual CNN on MIT-BIH, rebuilt from the raw PhysioNet records so that the
 
 An earlier version of this project used a widely distributed preprocessed CSV of MIT-BIH and reported 0.9746 accuracy. That file discards record identifiers and splits at the beat level, so beats from the same patient sit in both halves and patient-level evaluation is not merely absent from it but impossible. This version measures what that costs.
 
+<p align="center">
+  <a href="docs/poster/ECG_poster.pdf"><img src="docs/poster/ECG_poster.png" alt="Poster: Measuring the Inter-Patient Penalty in MIT-BIH Heartbeat Classification" width="900"></a>
+</p>
+<p align="center"><em>The project on one page. Click for the <a href="docs/poster/ECG_poster.pdf">PDF</a>.</em></p>
+
 ---
 
 ## The result
@@ -119,6 +124,7 @@ notebooks/
 docs/
   report.md        the write-up
   assets/          figures, by section
+  poster/          the one-page poster, PDF and preview
 ```
 
 Every run writes `predictions.csv`: one row per beat, with the recording it came from. Every analysis reads that file. Nothing downstream requires re-running inference.
@@ -140,6 +146,7 @@ The CSV-based pipeline and its results are preserved at the tag `v0.1.0-csv` and
 ## Reading
 
 - [`docs/report.md`](docs/report.md) — methods, results, discussion
+- [`docs/poster/ECG_poster.pdf`](docs/poster/ECG_poster.pdf) — the poster
 - `git checkout v0.1.0-csv` — the superseded pipeline
 
 ## References

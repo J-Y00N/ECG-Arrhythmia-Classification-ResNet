@@ -2,7 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+- `docs/poster/`: the one-page poster as PDF with a PNG preview, linked from the README. Its text and charts match the report after the corrections below.
+
 ### Fixed
+- Report: Table 11 gave the four-class macro F1 of `wide400` as 0.6070; the artefacts give 0.6073.
 - `wide187_rr` was missing from the representation table, so `ECG_REPRESENTATION=wide187_rr` raised although the arm is documented and its runs are stored. Restored.
 - Run directories for the default narrow arm are named without an arm prefix again (`inter-none-lossweight0-seed42`), matching the stored runs, the README, the notebook and `analysis/`.
 - `class_weights` now warns when a class falls below `min_support` and receives zero weight. This happens in every seed-42 inter-patient run, where fusion keeps 42 training beats; the report now says so.
