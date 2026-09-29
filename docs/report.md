@@ -86,9 +86,9 @@ Supraventricular and unclassifiable match exactly in both halves; the shortfall 
 
 Frequency understates the problem. With $p_r$ the share of class $c$'s beats from record $r$, and $R_c$ the number of records holding any,
 
-$$
+```math
 N_{\text{eff}}(c) = \frac{1}{\sum_r p_r^{2}}, \qquad 1 \le N_{\text{eff}}(c) \le R_c
-$$
+```
 
 the inverse Simpson index. It equals $R_c$ when the class is spread evenly and falls to 1 when one record supplies all of it. Because MIT-BIH holds one recording per subject, a value of 21.0 means *21 patients contributing equally*.
 
@@ -160,11 +160,11 @@ Three augmentation modes were compared under `narrow`: `none`, `on_the_fly` (eli
 
 Class weights are inverse frequency raised to $\beta$. Weighted risk minimisation equals unweighted minimisation under a tilted prior [16]: with $\pi_c$ the class frequencies,
 
-$$
+```math
 R_w(f) = \sum_c \pi_c w_c \, \mathbb{E}[\ell \mid Y = c]
 \propto \sum_c \tilde{\pi}_c \, \mathbb{E}[\ell \mid Y = c],
 \qquad \tilde{\pi}_c \propto w_c \pi_c
-$$
+```
 
 and $w_c \propto \pi_c^{-\beta}$ gives $\tilde{\pi}_c \propto \pi_c^{1-\beta}$. At $\beta = 1$ the base rate is removed entirely. An oversampler is compared separately; it is not equivalent, since batches acquire a different class composition, changing what the batch-normalisation layers learn, and Adam partially absorbs a large loss coefficient while it does not absorb repeated gradient steps.
 
@@ -193,12 +193,12 @@ The second answers *how would this model do on a different set of patients*; the
 
 With $Y_{ij}$ the correctness of beat $j$ in recording $i$,
 
-$$
+```math
 Y_{ij} = \mu + a_i + \varepsilon_{ij}, \qquad
 \rho = \frac{\sigma_a^2}{\sigma_a^2 + \sigma_\varepsilon^2}, \qquad
 D_{\text{eff}} = 1 + (\bar{m} - 1)\rho, \qquad
 n_{\text{eff}} = \frac{n}{D_{\text{eff}}}
-$$
+```
 
 with $\rho$ estimated by the method of moments from a one-way random-effects model [14], using the effective group size for unbalanced designs, and $D_{\text{eff}}$ the design effect of Kish [13]. The relation is derived for a **mean** and equal group sizes; §4.2 reports where it holds.
 
@@ -323,14 +323,14 @@ The gap orders with capacity, the linear model's at 0.215 against the network's 
 
 Crossing window context against explicit intervals, from the four-class column:
 
-$$
+```math
 \begin{aligned}
 \text{intervals alone} &= 0.4720 - 0.4443 = +0.0277 \\
 \text{wider window alone} &= 0.4878 - 0.4443 = +0.0435 \\
 \text{both} &= 0.4893 - 0.4443 = +0.0450 \\[2pt]
 \text{interaction} &= 0.0450 - 0.0277 - 0.0435 = \mathbf{-0.0262}
 \end{aligned}
-$$
+```
 
 **The interaction is negative: the two sources of timing are redundant.** Adding intervals to the wider window buys 0.0015 over the window alone.
 
