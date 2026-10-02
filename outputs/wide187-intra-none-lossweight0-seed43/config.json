@@ -1,6 +1,6 @@
 {
   "protocol": "intra",
-  "output_dir": "/Users/jy/_stats_/GitHub/ECG-Arrhythmia-Classification-ResNet/outputs/wide187-intra-none-lossweight0-seed43",
+  "output_dir": "outputs/wide187-intra-none-lossweight0-seed43",
   "data_dir": "data_wide187",
   "strict_disjoint": false,
   "validation_size": 0.2,

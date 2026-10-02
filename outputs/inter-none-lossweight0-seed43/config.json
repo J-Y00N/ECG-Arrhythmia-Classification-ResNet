@@ -1,7 +1,7 @@
 {
   "protocol": "inter",
-  "output_dir": "/Users/jy/_stats_/GitHub/ECG-Arrhythmia-Classification-ResNet/outputs/inter-none-lossweight0-seed43",
-  "data_dir": "/Users/jy/_stats_/GitHub/ECG-Arrhythmia-Classification-ResNet/data",
+  "output_dir": "outputs/inter-none-lossweight0-seed43",
+  "data_dir": "data",
   "strict_disjoint": false,
   "validation_size": 0.2,
   "batch_size": 256,

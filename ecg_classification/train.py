@@ -323,6 +323,15 @@ def build_dataloaders(
     return train_loader, valid_loader, test_loader, observe_loader, bundle, train_labels, distributions
 
 
+def _portable(path: Path) -> str:
+    """``path`` relative to the project root when it lies inside it."""
+    resolved = Path(path).resolve()
+    try:
+        return resolved.relative_to(PROJECT_ROOT).as_posix()
+    except ValueError:
+        return str(path)
+
+
 def run_training(config: TrainConfig) -> dict[str, Any]:
     """Train the model and save outputs."""
     set_seed(config.seed)
@@ -524,8 +533,10 @@ def run_training(config: TrainConfig) -> dict[str, Any]:
     final_macro_f1_scored = macro_f1_from_confusion(final_metrics["confusion_matrix"], test_scored)
 
     config_payload = asdict(config)
-    config_payload["output_dir"] = str(output_dir)
-    config_payload["data_dir"] = str(config.data_dir)
+    # Paths inside the project are stored relative to it, so a run's record
+    # does not carry the machine it was produced on.
+    config_payload["output_dir"] = _portable(output_dir)
+    config_payload["data_dir"] = _portable(config.data_dir)
     config_payload["run_name"] = config.run_name()
     config_payload["representation"] = REPRESENTATION
     config_payload["window_length"] = WINDOW_LENGTH

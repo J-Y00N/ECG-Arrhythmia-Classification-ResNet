@@ -1,6 +1,6 @@
 {
   "protocol": "inter",
-  "output_dir": "/Users/jy/_stats_/GitHub/ECG-Arrhythmia-Classification-ResNet/outputs/wide187-inter-none-lossweight0-seed42",
+  "output_dir": "outputs/wide187-inter-none-lossweight0-seed42",
   "data_dir": "data_wide187",
   "strict_disjoint": false,
   "validation_size": 0.2,

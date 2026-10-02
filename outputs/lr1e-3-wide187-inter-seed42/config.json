@@ -1,7 +1,7 @@
 {
   "protocol": "inter",
   "output_dir": "outputs/lr1e-3-wide187-inter-seed42",
-  "data_dir": "/Users/jy/_stats_/GitHub/ECG-Arrhythmia-Classification-ResNet/data",
+  "data_dir": "data",
   "strict_disjoint": false,
   "validation_size": 0.2,
   "batch_size": 256,
